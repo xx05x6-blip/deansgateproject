@@ -1,0 +1,13 @@
+{
+  "name": "deansgate-square-web-app",
+  "version": "1.0.0",
+  "description": "Standalone Web App for Deansgate Square General Store (Resident Storefront, Admin Command Center, and Runner Dispatch)",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve -s . -l 3000"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}

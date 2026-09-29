@@ -1,0 +1,5 @@
+/              /index.html    200
+/storefront    /index.html    200
+/admin         /admin.html    200
+/runner        /runner.html   200
+/*             /index.html    200

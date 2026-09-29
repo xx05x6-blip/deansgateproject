@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Deansgate Square General Store | Doorstep Delivery</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#090d16" />
+  <style>body { -webkit-tap-highlight-color: transparent; } ::-webkit-scrollbar { display: none; }</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased selection:bg-slate-800">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    const INITIAL_STORE_ITEMS = [
+      { id: 1, name: "Sourdough Baguette", category: "Bakery", price: 2.80, unit: "Freshly Baked", badge: "Morning Fresh", imageUrl: "" },
+      { id: 2, name: "Almond Croissant", category: "Bakery", price: 3.40, unit: "Artisan Pastry", badge: "Popular", imageUrl: "" },
+      { id: 3, name: "Pain au Chocolat", category: "Bakery", price: 3.10, unit: "Warm Bakery", badge: "Fresh Daily", imageUrl: "" },
+      { id: 4, name: "Organic Whole Milk", category: "Pantry", price: 1.95, unit: "1 Litre", badge: "Staple", imageUrl: "" },
+      { id: 5, name: "Oat Milk (Barista)", category: "Pantry", price: 2.30, unit: "1 Litre", badge: "Vegan", imageUrl: "" },
+      { id: 6, name: "Free Range Eggs (6pk)", category: "Pantry", price: 2.75, unit: "Half Dozen", badge: "Organic", imageUrl: "" },
+      { id: 7, name: "San Pellegrino Lemon", category: "Cold Drinks", price: 1.80, unit: "330ml Can", badge: "Chilled", imageUrl: "" },
+      { id: 8, name: "Diet Coke Can", category: "Cold Drinks", price: 1.50, unit: "330ml Can", badge: "Chilled", imageUrl: "" },
+      { id: 9, name: "Fresh Orange Juice", category: "Cold Drinks", price: 3.20, unit: "500ml Chilled", badge: "Cold Pressed", imageUrl: "" },
+      { id: 10, name: "Cloudwater Fuzzy IPA", category: "Beer & Wine", price: 4.50, unit: "440ml Craft Can", badge: "Local Brew", imageUrl: "" },
+      { id: 11, name: "Miraval Côtes de Provence Rosé", category: "Beer & Wine", price: 19.50, unit: "750ml Bottle", badge: "Chilled", imageUrl: "" },
+      { id: 12, name: "Peroni Nastro Azzurro (4pk)", category: "Beer & Wine", price: 7.50, unit: "4 x 330ml", badge: "Chilled", imageUrl: "" },
+      { id: 13, name: "Proper Chips Sea Salt", category: "Snacks", price: 1.75, unit: "85g Bag", badge: "Vegan", imageUrl: "" },
+      { id: 14, name: "Salted Caramel Gelato", category: "Snacks", price: 5.40, unit: "500ml Tub", badge: "Freezer", imageUrl: "" },
+      { id: 15, name: "Tony's Chocolonely Caramel", category: "Snacks", price: 3.85, unit: "180g Bar", badge: "Fairtrade", imageUrl: "" },
+      { id: 16, name: "Hayati Pro Ultra Pod Refill", category: "Late Night", price: 9.99, unit: "Pack of 2", badge: "18+ ID Req", imageUrl: "" },
+      { id: 17, name: "Paracetamol Extra (16pk)", category: "Late Night", price: 1.80, unit: "Box of 16", badge: "Pharmacy", imageUrl: "" }
+    ];
+
+    const TOWERS = [
+      { id: "SOUTH", name: "South", floors: 65 },
+      { id: "EAST", name: "East", floors: 50 },
+      { id: "WEST", name: "West", floors: 44 },
+      { id: "NORTH", name: "North", floors: 37 }
+    ];
+
+    function ResidentStorefront() {
+      const [deliveryFee, setDeliveryFee] = useState(() => parseFloat(localStorage.getItem("dg_delivery_fee") || "1.99"));
+      const [isStoreOpen, setIsStoreOpen] = useState(() => localStorage.getItem("dg_store_open") !== "false");
+      const [announcement, setAnnouncement] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across South, East, West & North Towers.");
+      const [accentColor, setAccentColor] = useState(() => localStorage.getItem("dg_theme_color") || "emerald");
+      const [runnerWhatsApp, setRunnerWhatsApp] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
+
+      const [storeItems, setStoreItems] = useState(() => {
+        const saved = localStorage.getItem("dg_store_items");
+        return saved ? JSON.parse(saved) : INITIAL_STORE_ITEMS;
+      });
+
+      const [cart, setCart] = useState({});
+      const [selectedCategory, setSelectedCategory] = useState("All");
+      const [tower, setTower] = useState("SOUTH");
+      const [flatNumber, setFlatNumber] = useState("");
+      const [customerPhone, setCustomerPhone] = useState("");
+      const [deliveryNotes, setDeliveryNotes] = useState("");
+      const [paymentMethod, setPaymentMethod] = useState("Monzo / Revolut Link");
+      const [isCartOpen, setIsCartOpen] = useState(false);
+
+      // Instant synchronization across tabs & Admin updates
+      useEffect(() => {
+        const syncFromStorage = () => {
+          const feeVal = parseFloat(localStorage.getItem("dg_delivery_fee") || "1.99");
+          setDeliveryFee(feeVal);
+
+          const openVal = localStorage.getItem("dg_store_open");
+          if (openVal !== null) setIsStoreOpen(openVal === "true");
+
+          const bannerVal = localStorage.getItem("dg_banner_announcement");
+          if (bannerVal !== null) setAnnouncement(bannerVal);
+
+          const colorVal = localStorage.getItem("dg_theme_color");
+          if (colorVal) setAccentColor(colorVal);
+
+          const phoneVal = localStorage.getItem("dg_runner_phone");
+          if (phoneVal) setRunnerWhatsApp(phoneVal);
+
+          const savedItems = localStorage.getItem("dg_store_items");
+          if (savedItems) {
+            try {
+              setStoreItems(JSON.parse(savedItems));
+            } catch (e) {}
+          }
+        };
+
+        syncFromStorage();
+
+        // BroadcastChannel listener
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.onmessage = (event) => {
+          if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE") {
+            syncFromStorage();
+          }
+        };
+
+        // Window storage event listener across tabs
+        const handleStorageEvent = () => syncFromStorage();
+        window.addEventListener("storage", handleStorageEvent);
+
+        // 1s Interval polling
+        const intervalId = setInterval(syncFromStorage, 1000);
+
+        return () => {
+          channel.close();
+          window.removeEventListener("storage", handleStorageEvent);
+          clearInterval(intervalId);
+        };
+      }, []);
+
+      const categories = ["All", "Bakery", "Cold Drinks", "Beer & Wine", "Pantry", "Snacks", "Late Night"];
+
+      const addToCart = (id) => setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+      const removeFromCart = (id) => setCart(prev => {
+        const next = { ...prev };
+        if (next[id] > 1) next[id] -= 1;
+        else delete next[id];
+        return next;
+      });
+
+      const totalCount = Object.values(cart).reduce((a, b) => a + b, 0);
+      const subtotal = Object.entries(cart).reduce((sum, [id, qty]) => {
+        const item = storeItems.find(i => i.id === Number(id));
+        return sum + (item ? item.price * qty : 0);
+      }, 0);
+      const fee = totalCount > 0 ? deliveryFee : 0;
+      const grandTotal = subtotal + fee;
+
+      const detectedFloor = useMemo(() => {
+        const cleaned = flatNumber.trim();
+        if (cleaned.length === 3) return cleaned.slice(0, 1);
+        if (cleaned.length >= 4) return cleaned.slice(0, 2);
+        return null;
+      }, [flatNumber]);
+
+      const handleSendOrder = () => {
+        if (!flatNumber.trim()) {
+          alert("Please enter your flat or apartment number.");
+          return;
+        }
+
+        const orderCode = "DG-" + Math.floor(100 + Math.random() * 900);
+        const orderData = {
+          id: orderCode,
+          tower,
+          unit: flatNumber.trim(),
+          floor: detectedFloor ? parseInt(detectedFloor) : 1,
+          items: Object.entries(cart).map(([id, qty]) => {
+            const item = storeItems.find(i => i.id === Number(id));
+            return { name: item ? item.name : `Item #${id}`, qty, price: item ? item.price : 0 };
+          }),
+          subtotal,
+          deliveryFee: fee,
+          grandTotal,
+          payment: paymentMethod,
+          notes: deliveryNotes,
+          phone: customerPhone,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          status: "ACCEPTED"
+        };
+
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.postMessage({ type: "NEW_ORDER", order: orderData });
+
+        const existing = JSON.parse(localStorage.getItem("dg_orders_history") || "[]");
+        localStorage.setItem("dg_orders_history", JSON.stringify([orderData, ...existing]));
+
+        const lines = [
+          `🛎️ *NEW DEANSGATE SQUARE ORDER #${orderCode}*`,
+          "━━━━━━━━━━━━━━━━━━━━",
+          `📍 *Dropoff Address:*`,
+          `• Tower: ${tower} Tower`,
+          `• Flat: Flat ${flatNumber.trim()}${detectedFloor ? ` (Floor ~${detectedFloor})` : ""}`,
+          customerPhone ? `• Phone: ${customerPhone}` : null,
+          deliveryNotes ? `• Notes: ${deliveryNotes}` : null,
+          "",
+          "🛒 *Shopping List:*",
+          ...orderData.items.map(it => `• ${it.qty}x ${it.name} - £${(it.price * it.qty).toFixed(2)}`),
+          "",
+          "━━━━━━━━━━━━━━━━━━━━",
+          `📦 Items Subtotal: £${subtotal.toFixed(2)}`,
+          `🛗 Vertical Lift Runner: £${fee.toFixed(2)}`,
+          `💰 *Total Due: £${grandTotal.toFixed(2)}*`,
+          `💳 Payment: ${paymentMethod}`,
+          "━━━━━━━━━━━━━━━━━━━━",
+          "⚡ *Ordered from Deansgate Square General Store*"
+        ].filter(Boolean);
+
+        const cleanNumber = runnerWhatsApp.replace(/[^0-9]/g, "");
+        window.open(`https://wa.me/${cleanNumber}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
+      };
+
+      const primaryBg = accentColor === "amber" ? "bg-amber-500 hover:bg-amber-400" :
+                        accentColor === "sky" ? "bg-sky-500 hover:bg-sky-400" :
+                        accentColor === "rose" ? "bg-rose-500 hover:bg-rose-400" :
+                        "bg-emerald-500 hover:bg-emerald-400";
+
+      const primaryText = accentColor === "amber" ? "text-amber-400" :
+                          accentColor === "sky" ? "text-sky-400" :
+                          accentColor === "rose" ? "text-rose-400" :
+                          "text-emerald-400";
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-950 pb-32">
+          <header className="p-4 bg-slate-900/90 backdrop-blur sticky top-0 z-20 border-b border-slate-800 flex justify-between items-center">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={`h-2.5 w-2.5 rounded-full ${isStoreOpen ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`}></span>
+                <span className={`text-[11px] font-bold uppercase tracking-wider ${isStoreOpen ? primaryText : 'text-rose-400'}`}>
+                  {isStoreOpen ? 'Open • Direct to Door' : 'Currently Paused'}
+                </span>
+              </div>
+              <h1 className="text-lg font-black text-white">Deansgate Square Store</h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono font-bold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
+                Lift: £{deliveryFee.toFixed(2)}
+              </span>
+            </div>
+          </header>
+
+          {announcement && (
+            <div className="px-4 py-2 bg-slate-900 border-b border-slate-850 text-xs text-slate-300">
+              {announcement}
+            </div>
+          )}
+
+          <div className="p-4 bg-slate-900/40 border-b border-slate-800">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Select Your Tower</span>
+            <div className="grid grid-cols-4 gap-2">
+              {TOWERS.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setTower(t.id)}
+                  className={`py-2 px-1 rounded-xl text-center border transition ${
+                    tower === t.id
+                      ? 'border-white bg-slate-800 text-white font-black ring-1 ring-white/50'
+                      : 'border-slate-800 bg-slate-900/60 text-slate-400'
+                  }`}
+                >
+                  <div className="text-xs">{t.name}</div>
+                  <div className="text-[10px] text-slate-500 font-normal">{t.floors} fl</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2 px-4 py-3 overflow-x-auto border-b border-slate-800 scrollbar-none">
+            {categories.map(c => (
+              <button
+                key={c}
+                onClick={() => setSelectedCategory(c)}
+                className={`whitespace-nowrap px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                  selectedCategory === c ? `${primaryBg} text-slate-950` : 'bg-slate-900 text-slate-400 border border-slate-800'
+                }`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
+          <div className="p-4 space-y-3 flex-1">
+            {storeItems.filter(i => selectedCategory === "All" || i.category === selectedCategory).map(item => {
+              const qty = cart[item.id] || 0;
+              return (
+                <div key={item.id} className="p-3.5 bg-slate-900/90 rounded-2xl border border-slate-800/90 flex justify-between items-center gap-3">
+                  {item.imageUrl && (
+                    <img src={item.imageUrl} alt={item.name} className="w-12 h-12 object-cover rounded-xl border border-slate-800 flex-shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0 pr-2">
+                    {item.badge && (
+                      <span className="text-[10px] font-bold text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">
+                        {item.badge}
+                      </span>
+                    )}
+                    <div className="font-bold text-white text-sm mt-1 truncate">{item.name}</div>
+                    <div className="text-xs text-slate-400">{item.unit}</div>
+                    <div className={`text-sm font-black mt-1 ${primaryText}`}>£{parseFloat(item.price).toFixed(2)}</div>
+                  </div>
+                  <div className="flex items-center bg-slate-950 rounded-xl border border-slate-800 p-1 flex-shrink-0">
+                    {qty > 0 ? (
+                      <>
+                        <button onClick={() => removeFromCart(item.id)} className="w-8 h-8 bg-slate-800 rounded font-black text-white active:scale-90">-</button>
+                        <span className="w-8 text-center text-xs font-black text-white">{qty}</span>
+                        <button onClick={() => addToCart(item.id)} className={`w-8 h-8 rounded font-black text-slate-950 ${primaryBg} active:scale-90`}>+</button>
+                      </>
+                    ) : (
+                      <button onClick={() => addToCart(item.id)} className={`px-3.5 py-1.5 ${primaryBg} text-slate-950 font-black text-xs rounded-lg active:scale-95 transition`}>
+                        + Add
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {totalCount > 0 && (
+            <div className="fixed bottom-0 left-0 right-0 p-4 max-w-md mx-auto z-30">
+              <button
+                onClick={() => setIsCartOpen(true)}
+                className={`w-full ${primaryBg} text-slate-950 font-black p-4 rounded-2xl shadow-2xl flex justify-between items-center transition active:scale-[0.98]`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="bg-slate-950 text-white text-xs px-2.5 py-1 rounded-full">{totalCount}</span>
+                  <span>View Delivery Bag</span>
+                </div>
+                <span>£{grandTotal.toFixed(2)}</span>
+              </button>
+            </div>
+          )}
+
+          {isCartOpen && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end max-w-md mx-auto">
+              <div className="bg-slate-900 rounded-t-3xl border-t border-slate-800 p-4 space-y-4 max-h-[85vh] overflow-y-auto">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h3 className="font-black text-white text-lg">{tower} Tower Delivery</h3>
+                    <p className="text-xs text-slate-400">Straight to your apartment door</p>
+                  </div>
+                  <button onClick={() => setIsCartOpen(false)} className="w-8 h-8 rounded-full bg-slate-800 text-slate-300 font-bold">✕</button>
+                </div>
+                <div className="space-y-2 bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Apartment Number *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 3402"
+                      value={flatNumber}
+                      onChange={e => setFlatNumber(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white outline-none font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Mobile Phone (Optional)</label>
+                    <input
+                      type="tel"
+                      placeholder="For dropoff call/SMS"
+                      value={customerPhone}
+                      onChange={e => setCustomerPhone(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Door Notes</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Leave at door if no answer"
+                      value={deliveryNotes}
+                      onChange={e => setDeliveryNotes(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-1">
+                  <div className="flex justify-between text-slate-400"><span>Items Subtotal</span><span>£{subtotal.toFixed(2)}</span></div>
+                  <div className="flex justify-between text-slate-400"><span>Lift Runner Drop Fee</span><span>£{fee.toFixed(2)}</span></div>
+                  <div className="flex justify-between text-white font-black text-sm pt-1 border-t border-slate-800"><span>Total Due</span><span className={primaryText}>£{grandTotal.toFixed(2)}</span></div>
+                </div>
+
+                <button
+                  onClick={handleSendOrder}
+                  className={`w-full ${primaryBg} text-slate-950 font-black p-4 rounded-2xl text-center shadow-xl active:scale-[0.98] transition`}
+                >
+                  Send Order via WhatsApp 🚀
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<ResidentStorefront />);
+  </script>
+</body>
+</html>
