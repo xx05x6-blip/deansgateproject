@@ -250,6 +250,13 @@
       const [showQrModal, setShowQrModal] = useState(false);
       const [copyNotice, setCopyNotice] = useState("");
 
+      // Live Active Customer Order Tracking State
+      const [activeOrder, setActiveOrder] = useState(() => {
+        const saved = localStorage.getItem("dg_active_resident_order");
+        return saved ? JSON.parse(saved) : null;
+      });
+      const [showReceiptModal, setShowReceiptModal] = useState(false);
+
       const baseUrl = window.location.origin;
 
       const handleCopyStorefrontLink = () => {
@@ -283,6 +290,20 @@
               setStoreItems(JSON.parse(savedItems));
             } catch (e) {}
           }
+
+          // Check if active resident order status was updated
+          const savedActive = localStorage.getItem("dg_active_resident_order");
+          if (savedActive) {
+            try {
+              const parsedActive = JSON.parse(savedActive);
+              const history = JSON.parse(localStorage.getItem("dg_orders_history") || "[]");
+              const updatedFromHist = history.find(o => o.id === parsedActive.id);
+              if (updatedFromHist) {
+                setActiveOrder(updatedFromHist);
+                localStorage.setItem("dg_active_resident_order", JSON.stringify(updatedFromHist));
+              }
+            } catch (e) {}
+          }
         };
 
         syncFromStorage();
@@ -291,6 +312,8 @@
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.onmessage = (event) => {
           if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE") {
+            syncFromStorage();
+          } else if (event.data.type === "STATUS_UPDATE") {
             syncFromStorage();
           }
         };
@@ -311,7 +334,14 @@
 
       const categories = ["All", "Bakery", "Cold Drinks", "Beer & Wine", "Pantry", "Snacks", "Late Night"];
 
-      const addToCart = (id) => setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+      const addToCart = (id) => {
+        if (!isStoreOpen) {
+          alert("Store operations are currently paused by management.");
+          return;
+        }
+        setCart(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+      };
+
       const removeFromCart = (id) => setCart(prev => {
         const next = { ...prev };
         if (next[id] > 1) next[id] -= 1;
@@ -334,7 +364,13 @@
         return null;
       }, [flatNumber]);
 
-      const handleSendOrder = () => {
+      // Complete Order Intake Handler (Supports both Direct Web Order and WhatsApp Dispatch)
+      const handleSendOrder = (sendToWhatsApp = true) => {
+        if (!isStoreOpen) {
+          alert("Store is currently paused. Please try again when the store reopens.");
+          return;
+        }
+
         if (!flatNumber.trim()) {
           alert("Please enter your flat or apartment number.");
           return;
@@ -360,35 +396,46 @@
           status: "ACCEPTED"
         };
 
+        // Broadcast to live Ops Network (Admin + Runner)
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.postMessage({ type: "NEW_ORDER", order: orderData });
 
+        // Save order to history and active resident order
         const existing = JSON.parse(localStorage.getItem("dg_orders_history") || "[]");
         localStorage.setItem("dg_orders_history", JSON.stringify([orderData, ...existing]));
+        localStorage.setItem("dg_active_resident_order", JSON.stringify(orderData));
+        setActiveOrder(orderData);
 
-        const lines = [
-          `RB *NEW DEANSGATE SQUARE ORDER #${orderCode}*`,
-          "━━━━━━━━━━━━━━━━━━━━",
-          `📍 *Dropoff Address:*`,
-          `• Tower: ${tower} Tower`,
-          `• Flat: Flat ${flatNumber.trim()}${detectedFloor ? ` (Floor ~${detectedFloor})` : ""}`,
-          customerPhone ? `• Phone: ${customerPhone}` : null,
-          deliveryNotes ? `• Notes: ${deliveryNotes}` : null,
-          "",
-          "🛒 *Shopping List:*",
-          ...orderData.items.map(it => `• ${it.qty}x ${it.name} - £${(it.price * it.qty).toFixed(2)}`),
-          "",
-          "━━━━━━━━━━━━━━━━━━━━",
-          `📦 Items Subtotal: £${subtotal.toFixed(2)}`,
-          `🛗 Vertical Lift Runner: £${fee.toFixed(2)}`,
-          `💰 *Total Due: £${grandTotal.toFixed(2)}*`,
-          `💳 Payment: ${paymentMethod}`,
-          "━━━━━━━━━━━━━━━━━━━━",
-          "⚡ *Ordered from Deansgate Square General Store*"
-        ].filter(Boolean);
+        // Clear cart and show confirmation modal
+        setCart({});
+        setIsCartOpen(false);
+        setShowReceiptModal(true);
 
-        const cleanNumber = runnerWhatsApp.replace(/[^0-9]/g, "");
-        window.open(`https://wa.me/${cleanNumber}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
+        if (sendToWhatsApp) {
+          const lines = [
+            `🛎️ *NEW DEANSGATE SQUARE ORDER #${orderCode}*`,
+            "━━━━━━━━━━━━━━━━━━━━",
+            `📍 *Dropoff Address:*`,
+            `• Tower: ${tower} Tower`,
+            `• Flat: Flat ${flatNumber.trim()}${detectedFloor ? ` (Floor ~${detectedFloor})` : ""}`,
+            customerPhone ? `• Phone: ${customerPhone}` : null,
+            deliveryNotes ? `• Notes: ${deliveryNotes}` : null,
+            "",
+            "🛒 *Shopping List:*",
+            ...orderData.items.map(it => `• ${it.qty}x ${it.name} - £${(it.price * it.qty).toFixed(2)}`),
+            "",
+            "━━━━━━━━━━━━━━━━━━━━",
+            `📦 Items Subtotal: £${subtotal.toFixed(2)}`,
+            `🛗 Vertical Lift Runner: £${fee.toFixed(2)}`,
+            `💰 *Total Due: £${grandTotal.toFixed(2)}*`,
+            `💳 Payment: ${paymentMethod}`,
+            "━━━━━━━━━━━━━━━━━━━━",
+            "⚡ *Ordered from Deansgate Square General Store*"
+          ].filter(Boolean);
+
+          const cleanNumber = runnerWhatsApp.replace(/[^0-9]/g, "");
+          window.open(`https://wa.me/${cleanNumber}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
+        }
       };
 
       const primaryBg = accentColor === "amber" ? "bg-amber-500 hover:bg-amber-400" :
@@ -403,6 +450,7 @@
 
       return (
         <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-950 pb-36">
+          {/* Header */}
           <header className="p-4 bg-slate-900/90 backdrop-blur sticky top-0 z-20 border-b border-slate-800 flex justify-between items-center">
             <div>
               <div className="flex items-center gap-2">
@@ -427,13 +475,49 @@
             </div>
           </header>
 
+          {/* Announcement Banner */}
           {announcement && (
             <div className="px-4 py-2 bg-slate-900 border-b border-slate-850 text-xs text-slate-300">
               {announcement}
             </div>
           )}
 
-          <div className="p-4 bg-slate-900/40 border-b border-slate-800">
+          {/* Live Active Customer Order Banner */}
+          {activeOrder && (
+            <div
+              onClick={() => setShowReceiptModal(true)}
+              className="mx-4 mt-3 p-3 bg-gradient-to-r from-violet-900/80 to-slate-900 border border-violet-500/40 rounded-2xl flex justify-between items-center cursor-pointer shadow-lg active:scale-[0.99] transition"
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl animate-bounce">🛗</span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-violet-300">Order #{activeOrder.id}</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                      activeOrder.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                      activeOrder.status === 'PICKED_UP' ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30' :
+                      'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    }`}>
+                      {activeOrder.status}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 font-medium">
+                    {activeOrder.tower} Tower Flat {activeOrder.unit} • Tap to view receipt & track
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs text-slate-400 font-bold">Track ➔</span>
+            </div>
+          )}
+
+          {!isStoreOpen && (
+            <div className="mx-4 mt-3 p-3 bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-bold rounded-2xl text-center">
+              🚫 Orders are currently paused by Store Operations.
+            </div>
+          )}
+
+          {/* Tower Selector */}
+          <div className="p-4 bg-slate-900/40 border-b border-slate-800 mt-2">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Select Your Tower</span>
             <div className="grid grid-cols-4 gap-2">
               {TOWERS.map(t => (
@@ -453,6 +537,7 @@
             </div>
           </div>
 
+          {/* Category Filter */}
           <div className="flex gap-2 px-4 py-3 overflow-x-auto border-b border-slate-800 scrollbar-none">
             {categories.map(c => (
               <button
@@ -467,6 +552,7 @@
             ))}
           </div>
 
+          {/* Store Items List */}
           <div className="p-4 space-y-3 flex-1">
             {storeItems.filter(i => selectedCategory === "All" || i.category === selectedCategory).map(item => {
               const qty = cart[item.id] || 0;
@@ -493,8 +579,12 @@
                         <button onClick={() => addToCart(item.id)} className={`w-8 h-8 rounded font-black text-slate-950 ${primaryBg} active:scale-90`}>+</button>
                       </>
                     ) : (
-                      <button onClick={() => addToCart(item.id)} className={`px-3.5 py-1.5 ${primaryBg} text-slate-950 font-black text-xs rounded-lg active:scale-95 transition`}>
-                        + Add
+                      <button
+                        onClick={() => addToCart(item.id)}
+                        disabled={!isStoreOpen}
+                        className={`px-3.5 py-1.5 ${isStoreOpen ? primaryBg : 'bg-slate-800 text-slate-500'} font-black text-xs rounded-lg active:scale-95 transition`}
+                      >
+                        {isStoreOpen ? '+ Add' : 'Paused'}
                       </button>
                     )}
                   </div>
@@ -503,7 +593,7 @@
             })}
           </div>
 
-          {/* Discreet Staff & Admin Password Protected Access Footer */}
+          {/* Staff Password Protected Access Footer */}
           <footer className="p-4 bg-slate-900/60 border-t border-slate-850/80 text-center space-y-2 mt-auto">
             <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest block">Concierge & Operations Access</span>
             <div className="flex justify-center gap-2">
@@ -522,6 +612,7 @@
             </div>
           </footer>
 
+          {/* Floating Cart Button */}
           {totalCount > 0 && (
             <div className="fixed bottom-0 left-0 right-0 p-4 max-w-md mx-auto z-30">
               <button
@@ -537,6 +628,7 @@
             </div>
           )}
 
+          {/* Checkout Bag Drawer */}
           {isCartOpen && (
             <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col justify-end max-w-md mx-auto">
               <div className="bg-slate-900 rounded-t-3xl border-t border-slate-800 p-4 space-y-4 max-h-[85vh] overflow-y-auto">
@@ -547,6 +639,7 @@
                   </div>
                   <button onClick={() => setIsCartOpen(false)} className="w-8 h-8 rounded-full bg-slate-800 text-slate-300 font-bold">✕</button>
                 </div>
+
                 <div className="space-y-2 bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs">
                   <div>
                     <label className="block text-slate-400 font-bold mb-1">Apartment Number *</label>
@@ -578,6 +671,19 @@
                       className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white outline-none"
                     />
                   </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Payment Method</label>
+                    <select
+                      value={paymentMethod}
+                      onChange={e => setPaymentMethod(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-white outline-none font-bold"
+                    >
+                      <option value="Monzo / Revolut Link">Monzo / Revolut Link</option>
+                      <option value="Instant Bank Transfer">Instant Bank Transfer</option>
+                      <option value="Card Payment at Door">Card Payment at Door</option>
+                      <option value="Cash on Delivery">Cash on Delivery</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-1">
@@ -586,17 +692,80 @@
                   <div className="flex justify-between text-white font-black text-sm pt-1 border-t border-slate-800"><span>Total Due</span><span className={primaryText}>£{grandTotal.toFixed(2)}</span></div>
                 </div>
 
+                <div className="space-y-2">
+                  <button
+                    onClick={() => handleSendOrder(false)}
+                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black p-3.5 rounded-2xl text-center shadow-xl active:scale-[0.98] transition text-sm flex items-center justify-center gap-2"
+                  >
+                    <span>⚡</span>
+                    <span>Place Order Direct on Web</span>
+                  </button>
+                  <button
+                    onClick={() => handleSendOrder(true)}
+                    className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold p-3 rounded-2xl text-center border border-slate-700 active:scale-[0.98] transition text-xs flex items-center justify-center gap-2"
+                  >
+                    <span>💬</span>
+                    <span>Send Order via WhatsApp</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Live Order Confirmation & Status Receipt Modal */}
+          {showReceiptModal && activeOrder && (
+            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center shadow-2xl">
+                <div className="w-14 h-14 bg-emerald-500/20 text-emerald-400 rounded-3xl flex items-center justify-center mx-auto text-2xl border border-emerald-500/30">
+                  🎉
+                </div>
+
+                <div>
+                  <span className="text-xs font-mono font-bold text-violet-300 uppercase">Order Confirmed #{activeOrder.id}</span>
+                  <h3 className="text-lg font-black text-white mt-1">Thank you for your order!</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Delivering to {activeOrder.tower} Tower Flat {activeOrder.unit}</p>
+                </div>
+
+                {/* Live Status Progression */}
+                <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-2 text-left">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Live Delivery Status</span>
+                  <div className="flex items-center justify-between font-bold">
+                    <span className={`px-2.5 py-1 rounded-lg text-xs uppercase ${
+                      activeOrder.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                      activeOrder.status === 'PICKED_UP' ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30' :
+                      'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    }`}>
+                      {activeOrder.status}
+                    </span>
+                    <span className="text-slate-400 font-mono text-[11px]">{activeOrder.timestamp}</span>
+                  </div>
+
+                  {/* Itemized List */}
+                  <div className="pt-2 border-t border-slate-850 space-y-1">
+                    {activeOrder.items?.map((it, idx) => (
+                      <div key={idx} className="flex justify-between text-slate-300">
+                        <span>{it.qty}x {it.name}</span>
+                        <span>£{(it.price * it.qty).toFixed(2)}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between font-bold text-white pt-1 border-t border-slate-850">
+                      <span>Total Due</span>
+                      <span className="text-emerald-400">£{(activeOrder.grandTotal || 0).toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+
                 <button
-                  onClick={handleSendOrder}
-                  className={`w-full ${primaryBg} text-slate-950 font-black p-4 rounded-2xl text-center shadow-xl active:scale-[0.98] transition`}
+                  onClick={() => setShowReceiptModal(false)}
+                  className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-2xl text-xs transition"
                 >
-                  Send Order via WhatsApp 🚀
+                  Done
                 </button>
               </div>
             </div>
           )}
 
-          {/* QR Code & Share Modal */}
+          {/* QR Code Modal */}
           {showQrModal && (
             <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
               <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center">
@@ -775,7 +944,7 @@
               </button>
               <button
                 onClick={onExit}
-                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-rose-400 text-xs font-bold border border-slate-700 flex items-center gap-1"
+                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-rose-400 text-xs font-bold border border-slate-700 flex items-center gap-1 transition"
                 title="Lock & Exit to Storefront"
               >
                 🔒 Exit
@@ -913,8 +1082,8 @@
     // ---------------------------------------------------------------------------
     function AdminHub({ onExit }) {
       const [feePounds, setFeePounds] = useState(() => localStorage.getItem("dg_delivery_fee") || "1.50");
-      const [isOpen, setIsOpen] = useState(true);
-      const [banner, setBanner] = useState("⚡ 10–15 minute door drops across all 4 towers.");
+      const [isOpen, setIsOpen] = useState(() => localStorage.getItem("dg_store_open") !== "false");
+      const [banner, setBanner] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across all 4 towers.");
       const [themeColor, setThemeColor] = useState(() => localStorage.getItem("dg_theme_color") || "violet");
       const [runnerPhone, setRunnerPhone] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
 
@@ -971,6 +1140,8 @@
       const broadcastConfig = (newFee, newIsOpen, newBanner, newColor, newPhone, newAdminP, newRunnerP) => {
         const feeNum = parseFloat(newFee) || 1.50;
         localStorage.setItem("dg_delivery_fee", feeNum.toString());
+        localStorage.setItem("dg_store_open", newIsOpen.toString());
+        localStorage.setItem("dg_banner_announcement", newBanner);
         localStorage.setItem("dg_theme_color", newColor);
         localStorage.setItem("dg_runner_phone", newPhone);
         if (newAdminP) localStorage.setItem("dg_admin_password", newAdminP);
@@ -1298,7 +1469,11 @@
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-2">
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => setIsOpen(!isOpen)}
+                  onClick={() => {
+                    const nextVal = !isOpen;
+                    setIsOpen(nextVal);
+                    broadcastConfig(feePounds, nextVal, banner, themeColor, runnerPhone, adminPassword, runnerPassword);
+                  }}
                   className={`px-4 py-2 rounded-xl text-xs font-black transition ${
                     isOpen ? 'bg-emerald-500 text-slate-950' : 'bg-rose-500 text-white'
                   }`}
