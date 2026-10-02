@@ -74,6 +74,26 @@
       } catch (e) {}
     }
 
+    // Helper: Send Real-Time Internet Chat Message across all connected users/runner/admin
+    function sendGlobalChatMessage(orderId, sender, senderName, text) {
+      if (!text || !text.trim()) return;
+      const newMsg = {
+        id: "msg_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        orderId,
+        sender, // "Resident" | "Runner" | "Admin"
+        senderName,
+        text: text.trim(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+
+      const existingMsgs = JSON.parse(localStorage.getItem("dg_chat_messages") || "[]");
+      const updatedMsgs = [...existingMsgs, newMsg];
+      localStorage.setItem("dg_chat_messages", JSON.stringify(updatedMsgs));
+
+      const channel = new BroadcastChannel("deansgate_ops_network");
+      channel.postMessage({ type: "CHAT_MESSAGE", message: newMsg });
+    }
+
     // Master Unified Web App
     function DeansgateApp() {
       const [currentView, setCurrentView] = useState("storefront"); // "storefront" | "runner" | "admin"
@@ -82,11 +102,11 @@
 
       const [authModalMode, setAuthModalMode] = useState(null); // null | "admin" | "runner"
       const [passInput, setPassInput] = useState("");
+      const [runnerPhoneInput, setRunnerPhoneInput] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
       const [authError, setAuthError] = useState("");
 
       const baseUrl = window.location.origin;
 
-      // URL Query param handling (?view=admin or ?view=runner)
       useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const reqView = params.get("view") || window.location.pathname.replace("/", "");
@@ -115,11 +135,18 @@
         } else if (authModalMode === "runner") {
           const expectedPass = localStorage.getItem("dg_runner_password") || "@Elijah16";
           if (passInput === expectedPass) {
+            const activePhone = runnerPhoneInput.trim() || "+44 7700 900456";
+            localStorage.setItem("dg_active_runner_phone", activePhone);
+            localStorage.setItem("dg_runner_status", "ONLINE");
             setIsRunnerAuthenticated(true);
             setCurrentView("runner");
             setAuthModalMode(null);
             setPassInput("");
             setAuthError("");
+
+            // Broadcast runner active phone update
+            const channel = new BroadcastChannel("deansgate_ops_network");
+            channel.postMessage({ type: "RUNNER_STATUS_UPDATE", phone: activePhone, status: "ONLINE" });
           } else {
             setAuthError("Incorrect Runner passcode. Default is @Elijah16");
           }
@@ -173,10 +200,10 @@
                     {authModalMode === "admin" ? "🔑" : "🏃‍♂️"}
                   </div>
                   <h3 className="text-lg font-black text-white">
-                    {authModalMode === "admin" ? "Admin Control Hub Access" : "Runner Dispatch Hub Access"}
+                    {authModalMode === "admin" ? "Admin Control Hub Access" : "Runner Dispatch Hub Login"}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    {authModalMode === "admin" ? "Enter Admin Password to unlock operations" : "Enter Runner Passcode to unlock lift dispatches"}
+                    {authModalMode === "admin" ? "Enter Admin Password to unlock operations" : "Enter Runner Passcode and Phone Number to go Online"}
                   </p>
                 </div>
 
@@ -200,6 +227,22 @@
                   />
                 </div>
 
+                {authModalMode === "runner" && (
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-400 mb-1">
+                      Runner Active Phone Number *
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +44 7700 900456"
+                      value={runnerPhoneInput}
+                      onChange={e => setRunnerPhoneInput(e.target.value)}
+                      className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl p-3 text-white text-sm outline-none font-mono font-bold"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-1 block">Displays live active status for dispatch and chat</span>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -214,7 +257,7 @@
                       authModalMode === "admin" ? "bg-violet-600 hover:bg-violet-500 text-white" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
                     }`}
                   >
-                    Unlock
+                    Unlock & Go Online
                   </button>
                 </div>
               </form>
@@ -233,6 +276,7 @@
       const [announcement, setAnnouncement] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across South, East, West & North Towers.");
       const [accentColor, setAccentColor] = useState(() => localStorage.getItem("dg_theme_color") || "emerald");
       const [runnerWhatsApp, setRunnerWhatsApp] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
 
       const [storeItems, setStoreItems] = useState(() => {
         const saved = localStorage.getItem("dg_store_items");
@@ -250,12 +294,17 @@
       const [showQrModal, setShowQrModal] = useState(false);
       const [copyNotice, setCopyNotice] = useState("");
 
-      // Live Active Customer Order Tracking State
+      // Live Active Customer Order & Chat State
       const [activeOrder, setActiveOrder] = useState(() => {
         const saved = localStorage.getItem("dg_active_resident_order");
         return saved ? JSON.parse(saved) : null;
       });
       const [showReceiptModal, setShowReceiptModal] = useState(false);
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [clientChatInput, setClientChatInput] = useState("");
 
       const baseUrl = window.location.origin;
 
@@ -266,7 +315,7 @@
         });
       };
 
-      // Instant synchronization across tabs & Admin updates
+      // Instant synchronization across tabs, Chat & Admin/Runner updates
       useEffect(() => {
         const syncFromStorage = () => {
           const feeVal = parseFloat(localStorage.getItem("dg_delivery_fee") || "1.99");
@@ -284,10 +333,20 @@
           const phoneVal = localStorage.getItem("dg_runner_phone");
           if (phoneVal) setRunnerWhatsApp(phoneVal);
 
+          const activePhoneVal = localStorage.getItem("dg_active_runner_phone");
+          if (activePhoneVal) setActiveRunnerPhone(activePhoneVal);
+
           const savedItems = localStorage.getItem("dg_store_items");
           if (savedItems) {
             try {
               setStoreItems(JSON.parse(savedItems));
+            } catch (e) {}
+          }
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
             } catch (e) {}
           }
 
@@ -308,21 +367,16 @@
 
         syncFromStorage();
 
-        // BroadcastChannel listener
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.onmessage = (event) => {
-          if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE") {
-            syncFromStorage();
-          } else if (event.data.type === "STATUS_UPDATE") {
+          if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE" || event.data.type === "STATUS_UPDATE" || event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
             syncFromStorage();
           }
         };
 
-        // Window storage event listener across tabs
         const handleStorageEvent = () => syncFromStorage();
         window.addEventListener("storage", handleStorageEvent);
 
-        // 1s Interval polling
         const intervalId = setInterval(syncFromStorage, 1000);
 
         return () => {
@@ -364,7 +418,6 @@
         return null;
       }, [flatNumber]);
 
-      // Complete Order Intake Handler (Supports both Direct Web Order and WhatsApp Dispatch)
       const handleSendOrder = (sendToWhatsApp = true) => {
         if (!isStoreOpen) {
           alert("Store is currently paused. Please try again when the store reopens.");
@@ -396,24 +449,24 @@
           status: "ACCEPTED"
         };
 
-        // Broadcast to live Ops Network (Admin + Runner)
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.postMessage({ type: "NEW_ORDER", order: orderData });
 
-        // Save order to history and active resident order
         const existing = JSON.parse(localStorage.getItem("dg_orders_history") || "[]");
         localStorage.setItem("dg_orders_history", JSON.stringify([orderData, ...existing]));
         localStorage.setItem("dg_active_resident_order", JSON.stringify(orderData));
         setActiveOrder(orderData);
 
-        // Clear cart and show confirmation modal
+        // Initial welcome chat message
+        sendGlobalChatMessage(orderCode, "System", "Deansgate Concierge", `Order #${orderCode} received! Your runner is assigned.`);
+
         setCart({});
         setIsCartOpen(false);
         setShowReceiptModal(true);
 
         if (sendToWhatsApp) {
           const lines = [
-            `RB *NEW DEANSGATE SQUARE ORDER #${orderCode}*`,
+            `🛎️ *NEW DEANSGATE SQUARE ORDER #${orderCode}*`,
             "━━━━━━━━━━━━━━━━━━━━",
             `📍 *Dropoff Address:*`,
             `• Tower: ${tower} Tower`,
@@ -437,6 +490,21 @@
           window.open(`https://wa.me/${cleanNumber}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
         }
       };
+
+      const handleSendClientChat = () => {
+        if (!activeOrder || !clientChatInput.trim()) return;
+        sendGlobalChatMessage(
+          activeOrder.id,
+          "Resident",
+          `Sophia (Flat ${activeOrder.unit})`,
+          clientChatInput
+        );
+        setClientChatInput("");
+      };
+
+      const currentOrderChat = activeOrder
+        ? chatMessages.filter(m => m.orderId === activeOrder.id)
+        : [];
 
       const primaryBg = accentColor === "amber" ? "bg-amber-500 hover:bg-amber-400" :
                         accentColor === "sky" ? "bg-sky-500 hover:bg-sky-400" :
@@ -502,11 +570,11 @@
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-300 font-medium">
-                    {activeOrder.tower} Tower Flat {activeOrder.unit} • Tap to view receipt & track
+                    {activeOrder.tower} Tower Flat {activeOrder.unit} • Tap to view receipt & chat
                   </p>
                 </div>
               </div>
-              <span className="text-xs text-slate-400 font-bold">Track ➔</span>
+              <span className="text-xs text-slate-400 font-bold">Track 💬 ➔</span>
             </div>
           )}
 
@@ -712,10 +780,10 @@
             </div>
           )}
 
-          {/* Live Order Confirmation & Status Receipt Modal */}
+          {/* Live Order Confirmation, Status Receipt & Integrated Real-Time Chat Modal */}
           {showReceiptModal && activeOrder && (
             <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center shadow-2xl">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center shadow-2xl max-h-[90vh] overflow-y-auto">
                 <div className="w-14 h-14 bg-emerald-500/20 text-emerald-400 rounded-3xl flex items-center justify-center mx-auto text-2xl border border-emerald-500/30">
                   🎉
                 </div>
@@ -728,7 +796,10 @@
 
                 {/* Live Status Progression */}
                 <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-2 text-left">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Live Delivery Status</span>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">Live Delivery Status</span>
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">🟢 Active Runner: {activeRunnerPhone}</span>
+                  </div>
                   <div className="flex items-center justify-between font-bold">
                     <span className={`px-2.5 py-1 rounded-lg text-xs uppercase ${
                       activeOrder.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
@@ -755,11 +826,56 @@
                   </div>
                 </div>
 
+                {/* Integrated Real-Time Live Chat Component */}
+                <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2 text-left">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-white uppercase">💬 Live Chat with Runner & Concierge</span>
+                    <span className="text-[10px] text-slate-400">{currentOrderChat.length} msgs</span>
+                  </div>
+
+                  <div className="max-h-36 overflow-y-auto space-y-2 p-2 bg-slate-900 rounded-xl border border-slate-850 text-xs">
+                    {currentOrderChat.length === 0 ? (
+                      <div className="text-slate-500 text-[11px] text-center py-2">No messages yet. Send a note to your runner!</div>
+                    ) : (
+                      currentOrderChat.map(msg => (
+                        <div key={msg.id} className={`p-2 rounded-xl text-xs ${
+                          msg.sender === "Resident" ? "bg-violet-600/20 border border-violet-500/30 text-violet-200" :
+                          msg.sender === "Runner" ? "bg-emerald-500/20 border border-emerald-500/30 text-emerald-200" :
+                          "bg-amber-500/20 border border-amber-500/30 text-amber-200"
+                        }`}>
+                          <div className="flex justify-between font-bold text-[10px] opacity-80">
+                            <span>{msg.senderName} ({msg.sender})</span>
+                            <span>{msg.timestamp}</span>
+                          </div>
+                          <p className="mt-0.5 text-white font-medium">{msg.text}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      placeholder="Type message to runner..."
+                      value={clientChatInput}
+                      onChange={e => setClientChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handleSendClientChat(); }}
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-white text-xs outline-none"
+                    />
+                    <button
+                      onClick={handleSendClientChat}
+                      className="bg-violet-600 hover:bg-violet-500 text-white px-3.5 py-1.5 rounded-xl font-bold text-xs shadow"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
+
                 <button
                   onClick={() => setShowReceiptModal(false)}
                   className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-2xl text-xs transition"
                 >
-                  Done
+                  Close Receipt
                 </button>
               </div>
             </div>
@@ -792,6 +908,1129 @@
                   <button onClick={handleCopyStorefrontLink} className="flex-1 bg-violet-600 text-white font-black py-2.5 rounded-xl text-xs">
                     📋 Copy Storefront Link
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ---------------------------------------------------------------------------
+    // 2. RUNNER DISPATCH DASHBOARD VIEW
+    // ---------------------------------------------------------------------------
+    function RunnerDashboard({ onExit }) {
+      const [showQrModal, setShowQrModal] = useState(false);
+      const [copyNotice, setCopyNotice] = useState("");
+
+      const baseUrl = window.location.origin;
+
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
+
+      const [orders, setOrders] = useState(() => {
+        const saved = localStorage.getItem("dg_orders_history");
+        return saved ? JSON.parse(saved) : [
+          {
+            id: "ORD-2026-101",
+            tower: "SOUTH",
+            unit: "1204",
+            floor: 12,
+            items: [{ name: "Fresh Sourdough Loaf", qty: 1 }, { name: "Oat Milk Flat White", qty: 2 }],
+            grandTotal: 12.10,
+            payment: "Monzo Link",
+            status: "PLACED",
+            notes: "Please leave at front door",
+            timestamp: "Just now"
+          },
+          {
+            id: "ORD-2026-102",
+            tower: "WEST",
+            unit: "1802",
+            floor: 18,
+            items: [{ name: "Charcuterie Platter", qty: 1 }],
+            grandTotal: 15.50,
+            payment: "Instant Bank Transfer",
+            status: "ACCEPTED",
+            notes: "Ring door chime twice",
+            timestamp: "10 mins ago"
+          }
+        ];
+      });
+
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [runnerChatInputs, setRunnerChatInputs] = useState({});
+
+      const [activeTower, setActiveTower] = useState("ALL");
+      const [sortAscending, setSortAscending] = useState(false);
+      const [isOnline, setIsOnline] = useState(true);
+
+      // Real-time synchronization across tabs & Admin updates
+      useEffect(() => {
+        const syncFromStorage = () => {
+          const saved = localStorage.getItem("dg_orders_history");
+          if (saved) {
+            try {
+              setOrders(JSON.parse(saved));
+            } catch (e) {}
+          }
+
+          const activePhoneVal = localStorage.getItem("dg_active_runner_phone");
+          if (activePhoneVal) setActiveRunnerPhone(activePhoneVal);
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
+            } catch (e) {}
+          }
+        };
+
+        syncFromStorage();
+
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.onmessage = (event) => {
+          if (event.data.type === "NEW_ORDER") {
+            playElevatorChime();
+            syncFromStorage();
+          } else if (event.data.type === "STATUS_UPDATE" || event.data.type === "CONFIG_UPDATE" || event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
+            syncFromStorage();
+          }
+        };
+
+        const handleStorageEvent = (e) => {
+          if (e.key === "dg_orders_history" || e.key === "dg_runner_password" || e.key === "dg_chat_messages" || !e.key) {
+            syncFromStorage();
+          }
+        };
+        window.addEventListener("storage", handleStorageEvent);
+
+        const intervalId = setInterval(syncFromStorage, 1000);
+
+        return () => {
+          channel.close();
+          window.removeEventListener("storage", handleStorageEvent);
+          clearInterval(intervalId);
+        };
+      }, []);
+
+      const handleCopyRunnerLink = () => {
+        navigator.clipboard.writeText(baseUrl + "/runner").then(() => {
+          setCopyNotice("✓ Copied Runner link!");
+          setTimeout(() => setCopyNotice(""), 3000);
+        });
+      };
+
+      const handleRunnerSendChat = (orderId) => {
+        const text = runnerChatInputs[orderId];
+        if (!text || !text.trim()) return;
+        sendGlobalChatMessage(
+          orderId,
+          "Runner",
+          `Runner (${activeRunnerPhone})`,
+          text
+        );
+        setRunnerChatInputs(prev => ({ ...prev, [orderId]: "" }));
+      };
+
+      const advanceStatus = (orderId) => {
+        setOrders(prev => {
+          const updated = prev.map(o => {
+            if (o.id !== orderId) return o;
+            const currentIdx = STAGES.findIndex(s => s.key === o.status);
+            if (currentIdx === -1 || currentIdx >= STAGES.length - 1) return o;
+            const nextKey = STAGES[currentIdx + 1].key;
+            if (nextKey === "PICKED_UP") {
+              playElevatorChime();
+            }
+            const channel = new BroadcastChannel("deansgate_ops_network");
+            channel.postMessage({ type: "STATUS_UPDATE", orderId, status: nextKey });
+            return { ...o, status: nextKey };
+          });
+          localStorage.setItem("dg_orders_history", JSON.stringify(updated));
+          return updated;
+        });
+      };
+
+      const filtered = orders
+        .filter(o => activeTower === "ALL" || o.tower === activeTower)
+        .sort((a, b) => sortAscending ? (a.floor || 1) - (b.floor || 1) : (b.floor || 1) - (a.floor || 1));
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen flex flex-col bg-slate-950 pb-12">
+          {/* Top Header */}
+          <header className="p-4 bg-slate-900/90 backdrop-blur sticky top-0 z-20 border-b border-slate-800 flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <div className="w-9 h-9 bg-emerald-500/20 text-emerald-400 rounded-xl flex items-center justify-center font-bold border border-emerald-500/30">
+                🏃‍♂️
+              </div>
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                  {isOnline ? `🟢 ONLINE (${activeRunnerPhone})` : '🔴 OFFLINE'}
+                </span>
+                <h1 className="text-sm font-black text-white">Deansgate Dispatch</h1>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowQrModal(true)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-bold border border-slate-700"
+                title="Scan or share Runner App link"
+              >
+                📱 QR Code
+              </button>
+              <button
+                onClick={() => setIsOnline(!isOnline)}
+                className={`px-3 py-1 rounded-xl text-xs font-bold transition ${
+                  isOnline ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-slate-800 text-slate-500 border border-slate-700'
+                }`}
+              >
+                {isOnline ? 'ONLINE' : 'OFFLINE'}
+              </button>
+              <button
+                onClick={onExit}
+                className="px-2.5 py-1 rounded-xl bg-slate-800 hover:bg-slate-700 text-rose-400 text-xs font-bold border border-slate-700 flex items-center gap-1 transition"
+                title="Lock & Exit to Storefront"
+              >
+                🔒 Exit
+              </button>
+            </div>
+          </header>
+
+          {/* Tower & Floor Controls */}
+          <div className="p-3 bg-slate-900/50 border-b border-slate-800 flex items-center justify-between gap-2">
+            <div className="flex gap-1 overflow-x-auto scrollbar-none flex-1">
+              {["ALL", "SOUTH", "WEST", "EAST", "NORTH"].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setActiveTower(t)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
+                    activeTower === t ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'bg-slate-950 text-slate-400 border-slate-800'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => setSortAscending(!sortAscending)}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono font-bold text-violet-400 whitespace-nowrap"
+            >
+              🛗 {sortAscending ? "Floor 1➔65" : "Floor 65➔1"}
+            </button>
+          </div>
+
+          {/* Delivery Cards Feed */}
+          <div className="p-4 space-y-3 flex-1">
+            {filtered.length === 0 ? (
+              <div className="text-center text-slate-500 py-12 text-xs">
+                No active delivery runs found for {activeTower}.
+              </div>
+            ) : (
+              filtered.map(o => {
+                const stageObj = STAGES.find(s => s.key === o.status) || STAGES[0];
+                const orderMsgs = chatMessages.filter(m => m.orderId === o.id);
+
+                return (
+                  <div key={o.id} className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-3">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg font-black text-white">Flat {o.unit}</span>
+                          <span className="text-[10px] font-bold bg-violet-500/20 text-violet-300 px-2 py-0.5 rounded border border-violet-500/30">
+                            {o.tower} TOWER
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 font-mono mt-0.5">{o.id} • Floor ~{o.floor || '?'}</p>
+                      </div>
+
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase ${
+                        o.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' :
+                        o.status === 'PICKED_UP' ? 'bg-violet-500/20 text-violet-300 border border-violet-500/40' :
+                        'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                      }`}>
+                        {o.status}
+                      </span>
+                    </div>
+
+                    {/* Items */}
+                    <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-850 text-xs space-y-1">
+                      {o.items?.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-slate-200">
+                          <span>• {it.qty}x {it.name}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {o.notes && (
+                      <div className="text-xs text-amber-300 bg-amber-500/10 p-2 rounded-xl border border-amber-500/20">
+                        📝 {o.notes}
+                      </div>
+                    )}
+
+                    {/* Integrated Real-Time Chat with Resident & Admin */}
+                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 space-y-2 text-xs">
+                      <div className="flex justify-between items-center text-slate-300 font-bold">
+                        <span>💬 Chat with Resident ({o.tower} Flat {o.unit})</span>
+                        <span className="text-[10px] text-slate-400">{orderMsgs.length} msgs</span>
+                      </div>
+
+                      <div className="max-h-28 overflow-y-auto space-y-1.5 p-2 bg-slate-900 rounded-lg border border-slate-800">
+                        {orderMsgs.length === 0 ? (
+                          <div className="text-slate-500 text-[10px] text-center py-1">No chat messages yet</div>
+                        ) : (
+                          orderMsgs.map(msg => (
+                            <div key={msg.id} className="p-1.5 rounded bg-slate-950 text-slate-200">
+                              <div className="flex justify-between text-[9px] font-bold text-slate-400">
+                                <span>{msg.senderName} ({msg.sender})</span>
+                                <span>{msg.timestamp}</span>
+                              </div>
+                              <p className="text-white text-xs mt-0.5">{msg.text}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Reply to resident..."
+                          value={runnerChatInputs[o.id] || ""}
+                          onChange={e => setRunnerChatInputs(prev => ({ ...prev, [o.id]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === "Enter") handleRunnerSendChat(o.id); }}
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white text-xs outline-none"
+                        />
+                        <button
+                          onClick={() => handleRunnerSendChat(o.id)}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-3 py-1 rounded-lg text-xs"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Action Step */}
+                    {stageObj.next ? (
+                      <button
+                        onClick={() => advanceStatus(o.id)}
+                        className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 rounded-xl transition active:scale-[0.98] text-xs flex items-center justify-center gap-2"
+                      >
+                        <span>🛗</span>
+                        <span>{stageObj.btn}</span>
+                      </button>
+                    ) : (
+                      <div className="p-2.5 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-xl text-center border border-emerald-500/20">
+                        ✓ Delivery Complete
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* QR Code & Share Modal */}
+          {showQrModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-white font-black text-base">Runner App QR Code 🏃‍♂️</h3>
+                  <button onClick={() => setShowQrModal(false)} className="w-8 h-8 rounded-full bg-slate-800 text-slate-300 font-bold">✕</button>
+                </div>
+
+                <div className="bg-white p-3 rounded-2xl shadow-xl inline-block border border-slate-700">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(baseUrl + '/runner')}`}
+                    alt="Runner App QR Code"
+                    className="w-44 h-44 rounded-xl"
+                  />
+                </div>
+
+                <div className="text-xs font-mono text-emerald-400 bg-slate-950 p-2.5 rounded-xl border border-slate-800 break-all">
+                  {baseUrl}/runner
+                </div>
+
+                {copyNotice && <div className="text-xs font-bold text-emerald-400">{copyNotice}</div>}
+
+                <div className="flex gap-2">
+                  <button onClick={handleCopyRunnerLink} className="flex-1 bg-emerald-500 text-slate-950 font-black py-2.5 rounded-xl text-xs">
+                    📋 Copy Runner Link
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ---------------------------------------------------------------------------
+    // 3. ADMIN COMMAND HUB VIEW
+    // ---------------------------------------------------------------------------
+    function AdminHub({ onExit }) {
+      const [feePounds, setFeePounds] = useState(() => localStorage.getItem("dg_delivery_fee") || "1.50");
+      const [isOpen, setIsOpen] = useState(() => localStorage.getItem("dg_store_open") !== "false");
+      const [banner, setBanner] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across all 4 towers.");
+      const [themeColor, setThemeColor] = useState(() => localStorage.getItem("dg_theme_color") || "violet");
+      const [runnerPhone, setRunnerPhone] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
+
+      // Passwords
+      const [adminPassword, setAdminPassword] = useState(() => localStorage.getItem("dg_admin_password") || "@Elijah16");
+      const [runnerPassword, setRunnerPassword] = useState(() => localStorage.getItem("dg_runner_password") || "@Elijah16");
+
+      // Password Modals
+      const [showAdminPassModal, setShowAdminPassModal] = useState(false);
+      const [showRunnerPassModal, setShowRunnerPassModal] = useState(false);
+      const [newPass, setNewPass] = useState("");
+      const [confirmPass, setConfirmPass] = useState("");
+      const [passError, setPassError] = useState("");
+
+      // Products Catalog State
+      const [products, setProducts] = useState(() => {
+        const saved = localStorage.getItem("dg_store_items");
+        return saved ? JSON.parse(saved) : INITIAL_STORE_ITEMS;
+      });
+      const [showProductModal, setShowProductModal] = useState(false);
+      const [editingProduct, setEditingProduct] = useState(null);
+      const [prodName, setProdName] = useState("");
+      const [prodCategory, setProdCategory] = useState("Bakery");
+      const [prodPrice, setProdPrice] = useState("2.50");
+      const [prodUnit, setProdUnit] = useState("Standard Item");
+      const [prodBadge, setProdBadge] = useState("In Stock");
+      const [prodImage, setProdImage] = useState("");
+
+      const [orders, setOrders] = useState(() => {
+        const saved = localStorage.getItem("dg_orders_history");
+        return saved ? JSON.parse(saved) : [];
+      });
+
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [adminSelectedOrderForChat, setAdminSelectedOrderForChat] = useState("");
+      const [adminChatInput, setAdminChatInput] = useState("");
+
+      const [saveNotice, setSaveNotice] = useState("");
+      const [copyNotice, setCopyNotice] = useState("");
+
+      const baseUrl = window.location.origin;
+
+      const handleCopyLink = (url, name) => {
+        navigator.clipboard.writeText(url).then(() => {
+          setCopyNotice(`✓ Copied ${name} link to clipboard!`);
+          setTimeout(() => setCopyNotice(""), 3000);
+        });
+      };
+
+      const saveAndBroadcastProducts = (updatedProducts) => {
+        setProducts(updatedProducts);
+        localStorage.setItem("dg_store_items", JSON.stringify(updatedProducts));
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.postMessage({ type: "PRODUCTS_UPDATE", items: updatedProducts });
+        setSaveNotice("✓ Updated product catalog & broadcasted to storefront!");
+        setTimeout(() => setSaveNotice(""), 3500);
+      };
+
+      const broadcastConfig = (newFee, newIsOpen, newBanner, newColor, newPhone, newAdminP, newRunnerP) => {
+        const feeNum = parseFloat(newFee) || 1.50;
+        localStorage.setItem("dg_delivery_fee", feeNum.toString());
+        localStorage.setItem("dg_store_open", newIsOpen.toString());
+        localStorage.setItem("dg_banner_announcement", newBanner);
+        localStorage.setItem("dg_theme_color", newColor);
+        localStorage.setItem("dg_runner_phone", newPhone);
+        if (newAdminP) localStorage.setItem("dg_admin_password", newAdminP);
+        if (newRunnerP) localStorage.setItem("dg_runner_password", newRunnerP);
+
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.postMessage({
+          type: "CONFIG_UPDATE",
+          deliveryFee: feeNum,
+          isOpen: newIsOpen,
+          announcement: newBanner,
+          color: newColor,
+          runnerPhone: newPhone,
+          adminPassword: newAdminP || adminPassword,
+          runnerPassword: newRunnerP || runnerPassword
+        });
+
+        setSaveNotice("✓ Saved & broadcasted across all operational hubs!");
+        setTimeout(() => setSaveNotice(""), 3500);
+      };
+
+      useEffect(() => {
+        const syncFromStorage = () => {
+          const savedActivePhone = localStorage.getItem("dg_active_runner_phone");
+          if (savedActivePhone) setActiveRunnerPhone(savedActivePhone);
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
+            } catch (e) {}
+          }
+        };
+
+        syncFromStorage();
+
+        const channel = new BroadcastChannel("deansgate_ops_network");
+        channel.onmessage = (event) => {
+          if (event.data.type === "NEW_ORDER") {
+            setOrders(prev => [event.data.order, ...prev]);
+          } else if (event.data.type === "STATUS_UPDATE") {
+            setOrders(prev => prev.map(o => o.id === event.data.orderId ? { ...o, status: event.data.status } : o));
+          } else if (event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
+            syncFromStorage();
+          }
+        };
+        return () => channel.close();
+      }, []);
+
+      const handleChangeAdminPass = () => {
+        if (!newPass || newPass !== confirmPass) {
+          setPassError("Passwords do not match or are empty.");
+          return;
+        }
+        if (newPass.length < 4) {
+          setPassError("Password must be at least 4 characters.");
+          return;
+        }
+        setAdminPassword(newPass);
+        localStorage.setItem("dg_admin_password", newPass);
+        broadcastConfig(feePounds, isOpen, banner, themeColor, runnerPhone, newPass, runnerPassword);
+        setShowAdminPassModal(false);
+        setNewPass(""); setConfirmPass(""); setPassError("");
+      };
+
+      const handleChangeRunnerPass = () => {
+        if (!newPass || newPass !== confirmPass) {
+          setPassError("Passwords do not match or are empty.");
+          return;
+        }
+        if (newPass.length < 4) {
+          setPassError("Password must be at least 4 characters.");
+          return;
+        }
+        setRunnerPassword(newPass);
+        localStorage.setItem("dg_runner_password", newPass);
+        broadcastConfig(feePounds, isOpen, banner, themeColor, runnerPhone, adminPassword, newPass);
+        setShowRunnerPassModal(false);
+        setNewPass(""); setConfirmPass(""); setPassError("");
+      };
+
+      const handleOpenAddProduct = () => {
+        setEditingProduct(null);
+        setProdName("");
+        setProdCategory("Bakery");
+        setProdPrice("2.50");
+        setProdUnit("Standard Item");
+        setProdBadge("In Stock");
+        setProdImage("");
+        setShowProductModal(true);
+      };
+
+      const handleOpenEditProduct = (p) => {
+        setEditingProduct(p);
+        setProdName(p.name);
+        setProdCategory(p.category || "General");
+        setProdPrice(p.price ? p.price.toString() : "0.00");
+        setProdUnit(p.unit || "");
+        setProdBadge(p.badge || "In Stock");
+        setProdImage(p.imageUrl || "");
+        setShowProductModal(true);
+      };
+
+      const handleSaveProduct = () => {
+        if (!prodName.trim()) return;
+        const priceNum = parseFloat(prodPrice) || 0;
+
+        if (editingProduct) {
+          const updated = products.map(p => p.id === editingProduct.id ? {
+            ...p,
+            name: prodName.trim(),
+            category: prodCategory,
+            price: priceNum,
+            unit: prodUnit,
+            badge: prodBadge,
+            imageUrl: prodImage.trim()
+          } : p);
+          saveAndBroadcastProducts(updated);
+        } else {
+          const newId = Date.now();
+          const newP = {
+            id: newId,
+            name: prodName.trim(),
+            category: prodCategory,
+            price: priceNum,
+            unit: prodUnit,
+            badge: prodBadge,
+            imageUrl: prodImage.trim()
+          };
+          saveAndBroadcastProducts([newP, ...products]);
+        }
+
+        setShowProductModal(false);
+      };
+
+      const handleDeleteProduct = (id) => {
+        if (confirm("Are you sure you want to delete this product?")) {
+          const updated = products.filter(p => p.id !== id);
+          saveAndBroadcastProducts(updated);
+        }
+      };
+
+      const handleAdminSendChat = () => {
+        if (!adminSelectedOrderForChat || !adminChatInput.trim()) return;
+        sendGlobalChatMessage(
+          adminSelectedOrderForChat,
+          "Admin",
+          "Operations Admin",
+          adminChatInput
+        );
+        setAdminChatInput("");
+      };
+
+      const totalRevenue = orders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
+      const activeRuns = orders.filter(o => o.status !== 'DELIVERED').length;
+
+      const activeChatMsgs = adminSelectedOrderForChat
+        ? chatMessages.filter(m => m.orderId === adminSelectedOrderForChat)
+        : chatMessages;
+
+      return (
+        <div className="max-w-4xl mx-auto p-4 sm:p-6 space-y-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-xs font-mono font-bold tracking-widest uppercase text-emerald-400">Live Operations Hub</span>
+              </div>
+              <h1 className="text-2xl font-black text-white mt-1">Deansgate Command Center</h1>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={onExit}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-rose-400 border border-slate-700 flex items-center gap-1 transition"
+              >
+                🔒 Exit Admin
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[11px] font-bold text-slate-400 uppercase block">Active In-Lift Runs</span>
+              <span className="text-2xl font-black text-amber-400 mt-1 block">{activeRuns}</span>
+            </div>
+            <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[11px] font-bold text-slate-400 uppercase block">Total Orders</span>
+              <span className="text-2xl font-black text-white mt-1 block">{orders.length}</span>
+            </div>
+            <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[11px] font-bold text-slate-400 uppercase block">Gross Volume</span>
+              <span className="text-2xl font-black text-emerald-400 mt-1 block">£{totalRevenue.toFixed(2)}</span>
+            </div>
+            <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
+              <span className="text-[11px] font-bold text-slate-400 uppercase block">Active Runner Phone</span>
+              <span className="text-xs font-mono font-black text-emerald-400 mt-2 block truncate">{activeRunnerPhone}</span>
+            </div>
+          </div>
+
+          {/* Integrated Operations Live Chat Feed */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">💬 Operations Chat Service & Dispatch Monitor</h2>
+                <p className="text-xs text-slate-400">Live internet communication between Residents, Runner (+44...), and Admin</p>
+              </div>
+              <span className="text-xs text-emerald-400 font-mono font-bold bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-xl">
+                {chatMessages.length} Total Msgs
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1">Filter by Order Thread</label>
+                <select
+                  value={adminSelectedOrderForChat}
+                  onChange={e => setAdminSelectedOrderForChat(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-white text-xs outline-none font-bold"
+                >
+                  <option value="">All Active Chat Threads ({chatMessages.length})</option>
+                  {orders.map(o => (
+                    <option key={o.id} value={o.id}>Order #{o.id} ({o.tower} Flat {o.unit})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-2 space-y-2">
+                <div className="max-h-40 overflow-y-auto space-y-2 p-3 bg-slate-950 rounded-xl border border-slate-850 text-xs">
+                  {activeChatMsgs.length === 0 ? (
+                    <div className="text-slate-500 text-xs text-center py-4">No chat messages in this thread</div>
+                  ) : (
+                    activeChatMsgs.map(msg => (
+                      <div key={msg.id} className={`p-2 rounded-xl text-xs ${
+                        msg.sender === "Resident" ? "bg-violet-600/20 border border-violet-500/30 text-violet-200" :
+                        msg.sender === "Runner" ? "bg-emerald-500/20 border border-emerald-500/30 text-emerald-200" :
+                        "bg-amber-500/20 border border-amber-500/30 text-amber-200"
+                      }`}>
+                        <div className="flex justify-between font-bold text-[10px] opacity-80">
+                          <span>{msg.senderName} ({msg.sender}) • Order #{msg.orderId}</span>
+                          <span>{msg.timestamp}</span>
+                        </div>
+                        <p className="mt-0.5 text-white font-medium">{msg.text}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {adminSelectedOrderForChat && (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder={`Send Admin message to Order #${adminSelectedOrderForChat}...`}
+                      value={adminChatInput}
+                      onChange={e => setAdminChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handleAdminSendChat(); }}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs outline-none"
+                    />
+                    <button
+                      onClick={handleAdminSendChat}
+                      className="bg-violet-600 hover:bg-violet-500 text-white font-bold px-4 py-2 rounded-xl text-xs"
+                    >
+                      Broadcast Msg
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Netlify Links & QR Codes Section */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">📱 App Links & Scannable QR Codes</h2>
+                <p className="text-xs text-slate-400">Share direct Netlify portal addresses or scan QR codes with phone camera</p>
+              </div>
+              {copyNotice && (
+                <span className="text-xs font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-xl">
+                  {copyNotice}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Portal 1: Storefront */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/90 flex flex-col items-center text-center space-y-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-lg">🛍️</span>
+                  <span className="font-bold text-white text-sm">Resident Storefront</span>
+                </div>
+                <div className="bg-white p-2 rounded-2xl shadow-lg border border-slate-700">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(baseUrl + '/storefront')}`}
+                    alt="Storefront QR Code"
+                    className="w-36 h-36 rounded-xl"
+                  />
+                </div>
+                <div className="text-[11px] font-mono text-violet-300 break-all bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800 w-full">
+                  {baseUrl}/storefront
+                </div>
+                <div className="flex gap-2 w-full">
+                  <button
+                    onClick={() => handleCopyLink(baseUrl + '/storefront', 'Storefront')}
+                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700 transition"
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+
+              {/* Portal 2: Runner */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/90 flex flex-col items-center text-center space-y-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-lg">🏃‍♂️</span>
+                  <span className="font-bold text-white text-sm">Runner Dispatch Hub</span>
+                </div>
+                <div className="bg-white p-2 rounded-2xl shadow-lg border border-slate-700">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(baseUrl + '/runner')}`}
+                    alt="Runner QR Code"
+                    className="w-36 h-36 rounded-xl"
+                  />
+                </div>
+                <div className="text-[11px] font-mono text-emerald-400 break-all bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800 w-full">
+                  {baseUrl}/runner
+                </div>
+                <div className="flex gap-2 w-full">
+                  <button
+                    onClick={() => handleCopyLink(baseUrl + '/runner', 'Runner')}
+                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700 transition"
+                  >
+                    📋 Copy
+                  </button>
+                </div>
+              </div>
+
+              {/* Portal 3: Admin */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/90 flex flex-col items-center text-center space-y-3">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-lg">🔑</span>
+                  <span className="font-bold text-white text-sm">Admin Command Hub</span>
+                </div>
+                <div className="bg-white p-2 rounded-2xl shadow-lg border border-slate-700">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(baseUrl + '/admin')}`}
+                    alt="Admin QR Code"
+                    className="w-36 h-36 rounded-xl"
+                  />
+                </div>
+                <div className="text-[11px] font-mono text-amber-300 break-all bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800 w-full">
+                  {baseUrl}/admin
+                </div>
+                <div className="flex gap-2 w-full">
+                  <button
+                    onClick={() => handleCopyLink(baseUrl + '/admin', 'Admin')}
+                    className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold border border-slate-700 transition"
+                  >
+                    📋 Copy Admin Link
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Security & Passwords Bar */}
+          <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Access Security & Passcodes</span>
+              <div className="text-xs text-slate-300 mt-1">
+                Admin Pass: <code className="bg-slate-950 px-2 py-0.5 rounded text-violet-400 font-mono font-bold">{adminPassword}</code> • Runner Pass: <code className="bg-slate-950 px-2 py-0.5 rounded text-emerald-400 font-mono font-bold">{runnerPassword}</code>
+              </div>
+            </div>
+            <div className="flex gap-2 w-full sm:w-auto">
+              <button
+                onClick={() => { setShowAdminPassModal(true); setPassError(""); setNewPass(""); setConfirmPass(""); }}
+                className="flex-1 sm:flex-initial px-3 py-2 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 text-xs font-bold border border-violet-500/30"
+              >
+                🔑 Admin Pass
+              </button>
+              <button
+                onClick={() => { setShowRunnerPassModal(true); setPassError(""); setNewPass(""); setConfirmPass(""); }}
+                className="flex-1 sm:flex-initial px-3 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-xs font-bold border border-emerald-500/30"
+              >
+                🏃‍♂️ Runner Pass
+              </button>
+            </div>
+          </div>
+
+          {/* Store Operations Settings */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Store Operations Settings</h2>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-slate-400 font-bold mb-1">Vertical Lift Drop Fee (£)</label>
+                <input
+                  type="number"
+                  step="0.10"
+                  value={feePounds}
+                  onChange={(e) => setFeePounds(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-400 font-bold mb-1">Runner WhatsApp Phone</label>
+                <input
+                  type="text"
+                  value={runnerPhone}
+                  onChange={(e) => setRunnerPhone(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-400 font-bold mb-1">Resident Banner Announcement</label>
+              <input
+                type="text"
+                value={banner}
+                onChange={(e) => setBanner(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+              />
+            </div>
+
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-2">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    const nextVal = !isOpen;
+                    setIsOpen(nextVal);
+                    broadcastConfig(feePounds, nextVal, banner, themeColor, runnerPhone, adminPassword, runnerPassword);
+                  }}
+                  className={`px-4 py-2 rounded-xl text-xs font-black transition ${
+                    isOpen ? 'bg-emerald-500 text-slate-950' : 'bg-rose-500 text-white'
+                  }`}
+                >
+                  {isOpen ? 'Store Active (Open)' : 'Store Paused (Closed)'}
+                </button>
+                <span className="text-xs text-slate-400">Controls resident order intake</span>
+              </div>
+
+              <button
+                onClick={() => broadcastConfig(feePounds, isOpen, banner, themeColor, runnerPhone, adminPassword, runnerPassword)}
+                className="w-full sm:w-auto bg-violet-600 hover:bg-violet-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg transition active:scale-95"
+              >
+                Broadcast Settings
+              </button>
+            </div>
+
+            {saveNotice && (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold rounded-xl text-center">
+                {saveNotice}
+              </div>
+            )}
+          </div>
+
+          {/* Products & Pricing Manager */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">Products, Prices & Images Catalog</h2>
+                <p className="text-xs text-slate-400">Change prices, titles, images, and stock for the Storefront</p>
+              </div>
+              <button
+                onClick={handleOpenAddProduct}
+                className="px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-black text-xs hover:bg-emerald-400 transition"
+              >
+                + Add Product
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {products.map(p => (
+                <div key={p.id} className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800 flex justify-between items-start gap-2">
+                  {p.imageUrl && (
+                    <img src={p.imageUrl} alt={p.name} className="w-12 h-12 object-cover rounded-xl border border-slate-800 flex-shrink-0" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-violet-400 bg-violet-950/60 px-2 py-0.5 rounded border border-violet-800/50">{p.category}</span>
+                      {p.badge && <span className="text-[10px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/50">{p.badge}</span>}
+                    </div>
+                    <div className="font-bold text-white text-sm mt-1 truncate">{p.name}</div>
+                    <div className="text-xs text-slate-400">{p.unit}</div>
+                    <div className="text-sm font-black text-emerald-400 mt-1">£{parseFloat(p.price).toFixed(2)}</div>
+                  </div>
+                  <div className="flex flex-col gap-1.5 flex-shrink-0">
+                    <button
+                      onClick={() => handleOpenEditProduct(p)}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-violet-300 rounded-lg text-xs font-bold border border-slate-700"
+                    >
+                      ✏️ Edit
+                    </button>
+                    <button
+                      onClick={() => handleDeleteProduct(p.id)}
+                      className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 rounded-lg text-xs font-bold border border-rose-800/50"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Orders History */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-3">
+            <h2 className="text-sm font-bold text-white uppercase tracking-wider">Recent Orders Feed ({orders.length})</h2>
+            {orders.length === 0 ? (
+              <div className="text-center text-slate-500 text-xs py-8">No resident orders recorded yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {orders.map(o => (
+                  <div key={o.id} className="p-3 bg-slate-950 rounded-xl border border-slate-850 flex justify-between items-center text-xs">
+                    <div>
+                      <span className="font-mono font-bold text-violet-400">{o.id}</span>
+                      <span className="text-slate-400 ml-2">• {o.tower} Tower Flat {o.unit}</span>
+                      <span className="text-slate-500 ml-2">({o.timestamp || 'Recent'})</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-white">£{(o.grandTotal || 0).toFixed(2)}</span>
+                      <span className={`px-2 py-0.5 rounded font-bold uppercase text-[10px] ${
+                        o.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
+                      }`}>
+                        {o.status || 'PLACED'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Edit/Add Product Modal */}
+          {showProductModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-md w-full space-y-3 max-h-[90vh] overflow-y-auto">
+                <h3 className="text-white font-bold text-base">
+                  {editingProduct ? "Edit Product & Price ✏️" : "Add New Product 🛍️"}
+                </h3>
+
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Product Title</label>
+                  <input
+                    type="text"
+                    value={prodName}
+                    onChange={e => setProdName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                    placeholder="e.g. Sourdough Loaf"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Category</label>
+                    <select
+                      value={prodCategory}
+                      onChange={e => setProdCategory(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                    >
+                      <option value="Bakery">Bakery</option>
+                      <option value="Cold Drinks">Cold Drinks</option>
+                      <option value="Beer & Wine">Beer & Wine</option>
+                      <option value="Pantry">Pantry</option>
+                      <option value="Snacks">Snacks</option>
+                      <option value="Late Night">Late Night</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Price (£)</label>
+                    <input
+                      type="number"
+                      step="0.05"
+                      value={prodPrice}
+                      onChange={e => setProdPrice(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Unit / Quantity Note</label>
+                    <input
+                      type="text"
+                      value={prodUnit}
+                      onChange={e => setProdUnit(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                      placeholder="e.g. 500ml Tub"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Badge Tag</label>
+                    <input
+                      type="text"
+                      value={prodBadge}
+                      onChange={e => setProdBadge(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                      placeholder="e.g. Organic, Chilled"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Image URL</label>
+                  <input
+                    type="text"
+                    value={prodImage}
+                    onChange={e => setProdImage(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none font-mono"
+                    placeholder="https://images.unsplash.com/..."
+                  />
+                  {prodImage && (
+                    <div className="mt-2">
+                      <img src={prodImage} alt="Preview" className="h-16 w-full object-cover rounded-xl border border-slate-800" />
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button onClick={() => setShowProductModal(false)} className="flex-1 bg-slate-800 text-slate-300 font-bold py-2.5 rounded-xl text-xs">Cancel</button>
+                  <button onClick={handleSaveProduct} className="flex-1 bg-emerald-500 text-slate-950 font-bold py-2.5 rounded-xl text-xs">Save Product</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Admin Password Modal */}
+          {showAdminPassModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-sm w-full space-y-3">
+                <h3 className="text-white font-bold text-base">Change Admin Password 🔑</h3>
+                {passError && <div className="text-xs text-rose-400 font-bold">{passError}</div>}
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">New Admin Password</label>
+                  <input
+                    type="password"
+                    value={newPass}
+                    onChange={e => setNewPass(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                    placeholder="Min 4 chars"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Confirm Admin Password</label>
+                  <input
+                    type="password"
+                    value={confirmPass}
+                    onChange={e => setConfirmPass(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                  />
+                </div>
+                <div className="flex gap-2 pt-2">
+                  <button onClick={() => setShowAdminPassModal(false)} className="flex-1 bg-slate-800 text-slate-300 font-bold py-2 rounded-xl text-xs">Cancel</button>
+                  <button onClick={handleChangeAdminPass} className="flex-1 bg-violet-600 text-white font-bold py-2 rounded-xl text-xs">Save</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Runner Password Modal */}
+          {showRunnerPassModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl max-w-sm w-full space-y-3">
+                <h3 className="text-white font-bold text-base">Change Runner Password 🏃‍♂️</h3>
+                {passError && <div className="text-xs text-rose-400 font-bold">{passError}</div>}
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">New Runner Passcode</label>
+                  <input
+                    type="password"
+                    value={newPass}
+                    onChange={e => setNewPass(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                    placeholder="Min 4 chars"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Confirm Runner Passcode</label>
+                  <input
+                    type="password"
+                    value={confirmPass}
+                    onChange={e => setConfirmPass(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white text-sm outline-none"
+                  />
+                </div>
+                <div className="flex gap-2 pt-2">
+                  <button onClick={() => setShowRunnerPassModal(false)} className="flex-1 bg-slate-800 text-slate-300 font-bold py-2 rounded-xl text-xs">Cancel</button>
+                  <button onClick={handleChangeRunnerPass} className="flex-1 bg-emerald-500 text-slate-950 font-bold py-2 rounded-xl text-xs">Save</button>
                 </div>
               </div>
             </div>

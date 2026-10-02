@@ -74,6 +74,26 @@
       } catch (e) {}
     }
 
+    // Helper: Send Real-Time Internet Chat Message across all connected users/runner/admin
+    function sendGlobalChatMessage(orderId, sender, senderName, text) {
+      if (!text || !text.trim()) return;
+      const newMsg = {
+        id: "msg_" + Date.now() + "_" + Math.floor(Math.random() * 1000),
+        orderId,
+        sender, // "Resident" | "Runner" | "Admin"
+        senderName,
+        text: text.trim(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+
+      const existingMsgs = JSON.parse(localStorage.getItem("dg_chat_messages") || "[]");
+      const updatedMsgs = [...existingMsgs, newMsg];
+      localStorage.setItem("dg_chat_messages", JSON.stringify(updatedMsgs));
+
+      const channel = new BroadcastChannel("deansgate_ops_network");
+      channel.postMessage({ type: "CHAT_MESSAGE", message: newMsg });
+    }
+
     // Master Unified Web App
     function DeansgateApp() {
       const [currentView, setCurrentView] = useState("storefront"); // "storefront" | "runner" | "admin"
@@ -82,11 +102,11 @@
 
       const [authModalMode, setAuthModalMode] = useState(null); // null | "admin" | "runner"
       const [passInput, setPassInput] = useState("");
+      const [runnerPhoneInput, setRunnerPhoneInput] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
       const [authError, setAuthError] = useState("");
 
       const baseUrl = window.location.origin;
 
-      // URL Query param handling (?view=admin or ?view=runner)
       useEffect(() => {
         const params = new URLSearchParams(window.location.search);
         const reqView = params.get("view") || window.location.pathname.replace("/", "");
@@ -115,11 +135,18 @@
         } else if (authModalMode === "runner") {
           const expectedPass = localStorage.getItem("dg_runner_password") || "@Elijah16";
           if (passInput === expectedPass) {
+            const activePhone = runnerPhoneInput.trim() || "+44 7700 900456";
+            localStorage.setItem("dg_active_runner_phone", activePhone);
+            localStorage.setItem("dg_runner_status", "ONLINE");
             setIsRunnerAuthenticated(true);
             setCurrentView("runner");
             setAuthModalMode(null);
             setPassInput("");
             setAuthError("");
+
+            // Broadcast runner active phone update
+            const channel = new BroadcastChannel("deansgate_ops_network");
+            channel.postMessage({ type: "RUNNER_STATUS_UPDATE", phone: activePhone, status: "ONLINE" });
           } else {
             setAuthError("Incorrect Runner passcode. Default is @Elijah16");
           }
@@ -173,10 +200,10 @@
                     {authModalMode === "admin" ? "🔑" : "🏃‍♂️"}
                   </div>
                   <h3 className="text-lg font-black text-white">
-                    {authModalMode === "admin" ? "Admin Control Hub Access" : "Runner Dispatch Hub Access"}
+                    {authModalMode === "admin" ? "Admin Control Hub Access" : "Runner Dispatch Hub Login"}
                   </h3>
                   <p className="text-xs text-slate-400">
-                    {authModalMode === "admin" ? "Enter Admin Password to unlock operations" : "Enter Runner Passcode to unlock lift dispatches"}
+                    {authModalMode === "admin" ? "Enter Admin Password to unlock operations" : "Enter Runner Passcode and Phone Number to go Online"}
                   </p>
                 </div>
 
@@ -200,6 +227,22 @@
                   />
                 </div>
 
+                {authModalMode === "runner" && (
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-400 mb-1">
+                      Runner Active Phone Number *
+                    </label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. +44 7700 900456"
+                      value={runnerPhoneInput}
+                      onChange={e => setRunnerPhoneInput(e.target.value)}
+                      className="w-full bg-slate-950 border border-emerald-500/40 rounded-xl p-3 text-white text-sm outline-none font-mono font-bold"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-1 block">Displays live active status for dispatch and chat</span>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -214,7 +257,7 @@
                       authModalMode === "admin" ? "bg-violet-600 hover:bg-violet-500 text-white" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
                     }`}
                   >
-                    Unlock
+                    Unlock & Go Online
                   </button>
                 </div>
               </form>
@@ -233,6 +276,7 @@
       const [announcement, setAnnouncement] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across South, East, West & North Towers.");
       const [accentColor, setAccentColor] = useState(() => localStorage.getItem("dg_theme_color") || "emerald");
       const [runnerWhatsApp, setRunnerWhatsApp] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
 
       const [storeItems, setStoreItems] = useState(() => {
         const saved = localStorage.getItem("dg_store_items");
@@ -250,12 +294,17 @@
       const [showQrModal, setShowQrModal] = useState(false);
       const [copyNotice, setCopyNotice] = useState("");
 
-      // Live Active Customer Order Tracking State
+      // Live Active Customer Order & Chat State
       const [activeOrder, setActiveOrder] = useState(() => {
         const saved = localStorage.getItem("dg_active_resident_order");
         return saved ? JSON.parse(saved) : null;
       });
       const [showReceiptModal, setShowReceiptModal] = useState(false);
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [clientChatInput, setClientChatInput] = useState("");
 
       const baseUrl = window.location.origin;
 
@@ -266,7 +315,7 @@
         });
       };
 
-      // Instant synchronization across tabs & Admin updates
+      // Instant synchronization across tabs, Chat & Admin/Runner updates
       useEffect(() => {
         const syncFromStorage = () => {
           const feeVal = parseFloat(localStorage.getItem("dg_delivery_fee") || "1.99");
@@ -284,10 +333,20 @@
           const phoneVal = localStorage.getItem("dg_runner_phone");
           if (phoneVal) setRunnerWhatsApp(phoneVal);
 
+          const activePhoneVal = localStorage.getItem("dg_active_runner_phone");
+          if (activePhoneVal) setActiveRunnerPhone(activePhoneVal);
+
           const savedItems = localStorage.getItem("dg_store_items");
           if (savedItems) {
             try {
               setStoreItems(JSON.parse(savedItems));
+            } catch (e) {}
+          }
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
             } catch (e) {}
           }
 
@@ -308,21 +367,16 @@
 
         syncFromStorage();
 
-        // BroadcastChannel listener
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.onmessage = (event) => {
-          if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE") {
-            syncFromStorage();
-          } else if (event.data.type === "STATUS_UPDATE") {
+          if (event.data.type === "CONFIG_UPDATE" || event.data.type === "PRODUCTS_UPDATE" || event.data.type === "STATUS_UPDATE" || event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
             syncFromStorage();
           }
         };
 
-        // Window storage event listener across tabs
         const handleStorageEvent = () => syncFromStorage();
         window.addEventListener("storage", handleStorageEvent);
 
-        // 1s Interval polling
         const intervalId = setInterval(syncFromStorage, 1000);
 
         return () => {
@@ -364,7 +418,6 @@
         return null;
       }, [flatNumber]);
 
-      // Complete Order Intake Handler (Supports both Direct Web Order and WhatsApp Dispatch)
       const handleSendOrder = (sendToWhatsApp = true) => {
         if (!isStoreOpen) {
           alert("Store is currently paused. Please try again when the store reopens.");
@@ -396,17 +449,17 @@
           status: "ACCEPTED"
         };
 
-        // Broadcast to live Ops Network (Admin + Runner)
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.postMessage({ type: "NEW_ORDER", order: orderData });
 
-        // Save order to history and active resident order
         const existing = JSON.parse(localStorage.getItem("dg_orders_history") || "[]");
         localStorage.setItem("dg_orders_history", JSON.stringify([orderData, ...existing]));
         localStorage.setItem("dg_active_resident_order", JSON.stringify(orderData));
         setActiveOrder(orderData);
 
-        // Clear cart and show confirmation modal
+        // Initial welcome chat message
+        sendGlobalChatMessage(orderCode, "System", "Deansgate Concierge", `Order #${orderCode} received! Your runner is assigned.`);
+
         setCart({});
         setIsCartOpen(false);
         setShowReceiptModal(true);
@@ -437,6 +490,21 @@
           window.open(`https://wa.me/${cleanNumber}?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
         }
       };
+
+      const handleSendClientChat = () => {
+        if (!activeOrder || !clientChatInput.trim()) return;
+        sendGlobalChatMessage(
+          activeOrder.id,
+          "Resident",
+          `Sophia (Flat ${activeOrder.unit})`,
+          clientChatInput
+        );
+        setClientChatInput("");
+      };
+
+      const currentOrderChat = activeOrder
+        ? chatMessages.filter(m => m.orderId === activeOrder.id)
+        : [];
 
       const primaryBg = accentColor === "amber" ? "bg-amber-500 hover:bg-amber-400" :
                         accentColor === "sky" ? "bg-sky-500 hover:bg-sky-400" :
@@ -502,11 +570,11 @@
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-300 font-medium">
-                    {activeOrder.tower} Tower Flat {activeOrder.unit} • Tap to view receipt & track
+                    {activeOrder.tower} Tower Flat {activeOrder.unit} • Tap to view receipt & chat
                   </p>
                 </div>
               </div>
-              <span className="text-xs text-slate-400 font-bold">Track ➔</span>
+              <span className="text-xs text-slate-400 font-bold">Track 💬 ➔</span>
             </div>
           )}
 
@@ -712,10 +780,10 @@
             </div>
           )}
 
-          {/* Live Order Confirmation & Status Receipt Modal */}
+          {/* Live Order Confirmation, Status Receipt & Integrated Real-Time Chat Modal */}
           {showReceiptModal && activeOrder && (
             <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center shadow-2xl">
+              <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center shadow-2xl max-h-[90vh] overflow-y-auto">
                 <div className="w-14 h-14 bg-emerald-500/20 text-emerald-400 rounded-3xl flex items-center justify-center mx-auto text-2xl border border-emerald-500/30">
                   🎉
                 </div>
@@ -728,7 +796,10 @@
 
                 {/* Live Status Progression */}
                 <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 text-xs space-y-2 text-left">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Live Delivery Status</span>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">Live Delivery Status</span>
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">🟢 Active Runner: {activeRunnerPhone}</span>
+                  </div>
                   <div className="flex items-center justify-between font-bold">
                     <span className={`px-2.5 py-1 rounded-lg text-xs uppercase ${
                       activeOrder.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
@@ -755,11 +826,56 @@
                   </div>
                 </div>
 
+                {/* Integrated Real-Time Live Chat Component */}
+                <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-2 text-left">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-white uppercase">💬 Live Chat with Runner & Concierge</span>
+                    <span className="text-[10px] text-slate-400">{currentOrderChat.length} msgs</span>
+                  </div>
+
+                  <div className="max-h-36 overflow-y-auto space-y-2 p-2 bg-slate-900 rounded-xl border border-slate-850 text-xs">
+                    {currentOrderChat.length === 0 ? (
+                      <div className="text-slate-500 text-[11px] text-center py-2">No messages yet. Send a note to your runner!</div>
+                    ) : (
+                      currentOrderChat.map(msg => (
+                        <div key={msg.id} className={`p-2 rounded-xl text-xs ${
+                          msg.sender === "Resident" ? "bg-violet-600/20 border border-violet-500/30 text-violet-200" :
+                          msg.sender === "Runner" ? "bg-emerald-500/20 border border-emerald-500/30 text-emerald-200" :
+                          "bg-amber-500/20 border border-amber-500/30 text-amber-200"
+                        }`}>
+                          <div className="flex justify-between font-bold text-[10px] opacity-80">
+                            <span>{msg.senderName} ({msg.sender})</span>
+                            <span>{msg.timestamp}</span>
+                          </div>
+                          <p className="mt-0.5 text-white font-medium">{msg.text}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      placeholder="Type message to runner..."
+                      value={clientChatInput}
+                      onChange={e => setClientChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handleSendClientChat(); }}
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-white text-xs outline-none"
+                    />
+                    <button
+                      onClick={handleSendClientChat}
+                      className="bg-violet-600 hover:bg-violet-500 text-white px-3.5 py-1.5 rounded-xl font-bold text-xs shadow"
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
+
                 <button
                   onClick={() => setShowReceiptModal(false)}
                   className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-2xl text-xs transition"
                 >
-                  Done
+                  Close Receipt
                 </button>
               </div>
             </div>
@@ -809,6 +925,8 @@
 
       const baseUrl = window.location.origin;
 
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
+
       const [orders, setOrders] = useState(() => {
         const saved = localStorage.getItem("dg_orders_history");
         return saved ? JSON.parse(saved) : [
@@ -839,6 +957,12 @@
         ];
       });
 
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [runnerChatInputs, setRunnerChatInputs] = useState({});
+
       const [activeTower, setActiveTower] = useState("ALL");
       const [sortAscending, setSortAscending] = useState(false);
       const [isOnline, setIsOnline] = useState(true);
@@ -852,6 +976,16 @@
               setOrders(JSON.parse(saved));
             } catch (e) {}
           }
+
+          const activePhoneVal = localStorage.getItem("dg_active_runner_phone");
+          if (activePhoneVal) setActiveRunnerPhone(activePhoneVal);
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
+            } catch (e) {}
+          }
         };
 
         syncFromStorage();
@@ -861,13 +995,13 @@
           if (event.data.type === "NEW_ORDER") {
             playElevatorChime();
             syncFromStorage();
-          } else if (event.data.type === "STATUS_UPDATE" || event.data.type === "CONFIG_UPDATE") {
+          } else if (event.data.type === "STATUS_UPDATE" || event.data.type === "CONFIG_UPDATE" || event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
             syncFromStorage();
           }
         };
 
         const handleStorageEvent = (e) => {
-          if (e.key === "dg_orders_history" || e.key === "dg_runner_password" || !e.key) {
+          if (e.key === "dg_orders_history" || e.key === "dg_runner_password" || e.key === "dg_chat_messages" || !e.key) {
             syncFromStorage();
           }
         };
@@ -887,6 +1021,18 @@
           setCopyNotice("✓ Copied Runner link!");
           setTimeout(() => setCopyNotice(""), 3000);
         });
+      };
+
+      const handleRunnerSendChat = (orderId) => {
+        const text = runnerChatInputs[orderId];
+        if (!text || !text.trim()) return;
+        sendGlobalChatMessage(
+          orderId,
+          "Runner",
+          `Runner (${activeRunnerPhone})`,
+          text
+        );
+        setRunnerChatInputs(prev => ({ ...prev, [orderId]: "" }));
       };
 
       const advanceStatus = (orderId) => {
@@ -921,7 +1067,9 @@
                 🏃‍♂️
               </div>
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Runner Operations</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                  {isOnline ? `🟢 ONLINE (${activeRunnerPhone})` : '🔴 OFFLINE'}
+                </span>
                 <h1 className="text-sm font-black text-white">Deansgate Dispatch</h1>
               </div>
             </div>
@@ -985,6 +1133,8 @@
             ) : (
               filtered.map(o => {
                 const stageObj = STAGES.find(s => s.key === o.status) || STAGES[0];
+                const orderMsgs = chatMessages.filter(m => m.orderId === o.id);
+
                 return (
                   <div key={o.id} className="p-4 bg-slate-900 rounded-2xl border border-slate-800 space-y-3">
                     <div className="flex justify-between items-start">
@@ -1021,6 +1171,47 @@
                         📝 {o.notes}
                       </div>
                     )}
+
+                    {/* Integrated Real-Time Chat with Resident & Admin */}
+                    <div className="bg-slate-950 p-3 rounded-xl border border-slate-850 space-y-2 text-xs">
+                      <div className="flex justify-between items-center text-slate-300 font-bold">
+                        <span>💬 Chat with Resident ({o.tower} Flat {o.unit})</span>
+                        <span className="text-[10px] text-slate-400">{orderMsgs.length} msgs</span>
+                      </div>
+
+                      <div className="max-h-28 overflow-y-auto space-y-1.5 p-2 bg-slate-900 rounded-lg border border-slate-800">
+                        {orderMsgs.length === 0 ? (
+                          <div className="text-slate-500 text-[10px] text-center py-1">No chat messages yet</div>
+                        ) : (
+                          orderMsgs.map(msg => (
+                            <div key={msg.id} className="p-1.5 rounded bg-slate-950 text-slate-200">
+                              <div className="flex justify-between text-[9px] font-bold text-slate-400">
+                                <span>{msg.senderName} ({msg.sender})</span>
+                                <span>{msg.timestamp}</span>
+                              </div>
+                              <p className="text-white text-xs mt-0.5">{msg.text}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder="Reply to resident..."
+                          value={runnerChatInputs[o.id] || ""}
+                          onChange={e => setRunnerChatInputs(prev => ({ ...prev, [o.id]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === "Enter") handleRunnerSendChat(o.id); }}
+                          className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-white text-xs outline-none"
+                        />
+                        <button
+                          onClick={() => handleRunnerSendChat(o.id)}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-3 py-1 rounded-lg text-xs"
+                        >
+                          Reply
+                        </button>
+                      </div>
+                    </div>
 
                     {/* Action Step */}
                     {stageObj.next ? (
@@ -1086,6 +1277,7 @@
       const [banner, setBanner] = useState(() => localStorage.getItem("dg_banner_announcement") || "⚡ 10–15 minute door drops across all 4 towers.");
       const [themeColor, setThemeColor] = useState(() => localStorage.getItem("dg_theme_color") || "violet");
       const [runnerPhone, setRunnerPhone] = useState(() => localStorage.getItem("dg_runner_phone") || "447123456789");
+      const [activeRunnerPhone, setActiveRunnerPhone] = useState(() => localStorage.getItem("dg_active_runner_phone") || "+44 7700 900456");
 
       // Passwords
       const [adminPassword, setAdminPassword] = useState(() => localStorage.getItem("dg_admin_password") || "@Elijah16");
@@ -1116,6 +1308,14 @@
         const saved = localStorage.getItem("dg_orders_history");
         return saved ? JSON.parse(saved) : [];
       });
+
+      const [chatMessages, setChatMessages] = useState(() => {
+        const saved = localStorage.getItem("dg_chat_messages");
+        return saved ? JSON.parse(saved) : [];
+      });
+      const [adminSelectedOrderForChat, setAdminSelectedOrderForChat] = useState("");
+      const [adminChatInput, setAdminChatInput] = useState("");
+
       const [saveNotice, setSaveNotice] = useState("");
       const [copyNotice, setCopyNotice] = useState("");
 
@@ -1164,12 +1364,28 @@
       };
 
       useEffect(() => {
+        const syncFromStorage = () => {
+          const savedActivePhone = localStorage.getItem("dg_active_runner_phone");
+          if (savedActivePhone) setActiveRunnerPhone(savedActivePhone);
+
+          const savedMsgs = localStorage.getItem("dg_chat_messages");
+          if (savedMsgs) {
+            try {
+              setChatMessages(JSON.parse(savedMsgs));
+            } catch (e) {}
+          }
+        };
+
+        syncFromStorage();
+
         const channel = new BroadcastChannel("deansgate_ops_network");
         channel.onmessage = (event) => {
           if (event.data.type === "NEW_ORDER") {
             setOrders(prev => [event.data.order, ...prev]);
           } else if (event.data.type === "STATUS_UPDATE") {
             setOrders(prev => prev.map(o => o.id === event.data.orderId ? { ...o, status: event.data.status } : o));
+          } else if (event.data.type === "CHAT_MESSAGE" || event.data.type === "RUNNER_STATUS_UPDATE") {
+            syncFromStorage();
           }
         };
         return () => channel.close();
@@ -1268,8 +1484,23 @@
         }
       };
 
+      const handleAdminSendChat = () => {
+        if (!adminSelectedOrderForChat || !adminChatInput.trim()) return;
+        sendGlobalChatMessage(
+          adminSelectedOrderForChat,
+          "Admin",
+          "Operations Admin",
+          adminChatInput
+        );
+        setAdminChatInput("");
+      };
+
       const totalRevenue = orders.reduce((sum, o) => sum + (o.grandTotal || 0), 0);
       const activeRuns = orders.filter(o => o.status !== 'DELIVERED').length;
+
+      const activeChatMsgs = adminSelectedOrderForChat
+        ? chatMessages.filter(m => m.orderId === adminSelectedOrderForChat)
+        : chatMessages;
 
       return (
         <div className="max-w-4xl mx-auto p-4 sm:p-6 space-y-6">
@@ -1305,8 +1536,78 @@
               <span className="text-2xl font-black text-emerald-400 mt-1 block">£{totalRevenue.toFixed(2)}</span>
             </div>
             <div className="bg-slate-900 p-4 rounded-2xl border border-slate-800">
-              <span className="text-[11px] font-bold text-slate-400 uppercase block">Catalog Items</span>
-              <span className="text-2xl font-black text-violet-400 mt-1 block">{products.length}</span>
+              <span className="text-[11px] font-bold text-slate-400 uppercase block">Active Runner Phone</span>
+              <span className="text-xs font-mono font-black text-emerald-400 mt-2 block truncate">{activeRunnerPhone}</span>
+            </div>
+          </div>
+
+          {/* Integrated Operations Live Chat Feed */}
+          <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">💬 Operations Chat Service & Dispatch Monitor</h2>
+                <p className="text-xs text-slate-400">Live internet communication between Residents, Runner (+44...), and Admin</p>
+              </div>
+              <span className="text-xs text-emerald-400 font-mono font-bold bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-xl">
+                {chatMessages.length} Total Msgs
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 mb-1">Filter by Order Thread</label>
+                <select
+                  value={adminSelectedOrderForChat}
+                  onChange={e => setAdminSelectedOrderForChat(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-white text-xs outline-none font-bold"
+                >
+                  <option value="">All Active Chat Threads ({chatMessages.length})</option>
+                  {orders.map(o => (
+                    <option key={o.id} value={o.id}>Order #{o.id} ({o.tower} Flat {o.unit})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="sm:col-span-2 space-y-2">
+                <div className="max-h-40 overflow-y-auto space-y-2 p-3 bg-slate-950 rounded-xl border border-slate-850 text-xs">
+                  {activeChatMsgs.length === 0 ? (
+                    <div className="text-slate-500 text-xs text-center py-4">No chat messages in this thread</div>
+                  ) : (
+                    activeChatMsgs.map(msg => (
+                      <div key={msg.id} className={`p-2 rounded-xl text-xs ${
+                        msg.sender === "Resident" ? "bg-violet-600/20 border border-violet-500/30 text-violet-200" :
+                        msg.sender === "Runner" ? "bg-emerald-500/20 border border-emerald-500/30 text-emerald-200" :
+                        "bg-amber-500/20 border border-amber-500/30 text-amber-200"
+                      }`}>
+                        <div className="flex justify-between font-bold text-[10px] opacity-80">
+                          <span>{msg.senderName} ({msg.sender}) • Order #{msg.orderId}</span>
+                          <span>{msg.timestamp}</span>
+                        </div>
+                        <p className="mt-0.5 text-white font-medium">{msg.text}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {adminSelectedOrderForChat && (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder={`Send Admin message to Order #${adminSelectedOrderForChat}...`}
+                      value={adminChatInput}
+                      onChange={e => setAdminChatInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handleAdminSendChat(); }}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs outline-none"
+                    />
+                    <button
+                      onClick={handleAdminSendChat}
+                      className="bg-violet-600 hover:bg-violet-500 text-white font-bold px-4 py-2 rounded-xl text-xs"
+                    >
+                      Broadcast Msg
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 

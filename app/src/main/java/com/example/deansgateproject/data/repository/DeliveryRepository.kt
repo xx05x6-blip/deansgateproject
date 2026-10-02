@@ -52,9 +52,18 @@ object DeliveryRepository {
     private val _orders = MutableStateFlow<List<Order>>(emptyList())
     val orders: StateFlow<List<Order>> = _orders.asStateFlow()
 
-    // Runner Online/Active state
+    // Runner Online/Active state & Phone
     private val _isRunnerOnline = MutableStateFlow(true)
     val isRunnerOnline: StateFlow<Boolean> = _isRunnerOnline.asStateFlow()
+
+    private val _activeRunnerPhone = MutableStateFlow("+44 7700 900456")
+    val activeRunnerPhone: StateFlow<String> = _activeRunnerPhone.asStateFlow()
+
+    fun updateActiveRunnerPhone(phone: String) {
+        if (phone.isNotBlank()) {
+            _activeRunnerPhone.value = phone
+        }
+    }
 
     init {
         seedInitialData()
